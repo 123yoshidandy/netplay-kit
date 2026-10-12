@@ -23,13 +23,14 @@
         // storageKey: 参加情報を保存する localStorage のキー（ゲームごとに変える）
         // cpuStepDelayMs: cpu: true の state を、この間隔で順に届ける（0 ならすぐ届ける）
         constructor({ serverUrl, storageKey, pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
-            reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS, cpuStepDelayMs = 0, roomParam = 'room' } = {}) {
+            reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS, cpuStepDelayMs = 0, roomParam = 'room', keepParams = ['server'] } = {}) {
             this.serverUrl = serverUrl;
             this.storageKey = storageKey;
             this.pingIntervalMs = pingIntervalMs;
             this.reconnectDelayMs = reconnectDelayMs;
             this.cpuStepDelayMs = cpuStepDelayMs;
             this.roomParam = roomParam;
+            this.keepParams = keepParams;    // 招待URLに残す項目（接続先の ?server= など）
 
             this.listeners = new Map();
             this.socket = null;
@@ -358,11 +359,16 @@
 
         // ===== 招待URL =====
 
-        // 招待URL（?room=部屋番号）
+        // 招待URL（?room=部屋番号）。接続先の ?server= は残す（手元で別のポートのサーバーを試すときも、同じサーバーにつながるように）
         inviteUrl(roomCode = this.lobby?.roomCode ?? this.session?.roomCode) {
+            const current = new URL(location.href);
             const url = new URL(location.href);
             url.search = '';
             url.hash = '';
+            this.keepParams.forEach(name => {
+                const value = current.searchParams.get(name);
+                if (value !== null) url.searchParams.set(name, value);
+            });
             url.searchParams.set(this.roomParam, roomCode);
             return url.toString();
         }

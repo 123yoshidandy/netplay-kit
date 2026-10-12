@@ -155,6 +155,24 @@ describe('NetplayClient の届く順番', () => {
     });
 });
 
+describe('招待URL', () => {
+    it('部屋番号を入れ、接続先の ?server= は残し、ほかの項目は外す', () => {
+        const saved = globalThis.location;
+        globalThis.location = new URL('http://localhost:8089/game/?server=ws%3A%2F%2Flocalhost%3A8788&seed=5&room=11111#top');
+        try {
+            const net = new NetplayClient({ storageKey: 'test.invite' });
+            const url = new URL(net.inviteUrl('12345'));
+            expect(url.pathname).toBe('/game/');
+            expect(url.searchParams.get('room')).toBe('12345');
+            expect(url.searchParams.get('server')).toBe('ws://localhost:8788');
+            expect(url.searchParams.has('seed')).toBe(false);
+            expect(url.hash).toBe('');
+        } finally {
+            globalThis.location = saved;
+        }
+    });
+});
+
 describe('読み込み方', () => {
     it('普通の <script> として読んでも（モジュールでなくても）NetplayClient が置かれる', () => {
         const code = fs.readFileSync(new URL('../client/netplay-client.js', import.meta.url), 'utf8');

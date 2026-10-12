@@ -123,7 +123,7 @@ export default {
 - 操作は `handle` が返ったあと、CPU を進め、`isOver` を確かめ、`persist` して保存し、部屋の状態（変わったときだけ）→ 各人のビュー → CPU の1手ごとのビュー（`cpu: true`）の順に送る
 - `readOnly: true` の操作は保存しない。部屋の読み込みは1回だけ（接続→部屋番号の対応を Lambda のメモリに置くため）
 - 対戦中だけの操作（既定）は、対戦の外から届いたものや、`matchId` が今の対戦と違うものを黙って捨てる
-- 端末から届いた操作の検証と、記録する項目の絞り込みは、ゲームの側で行う
+- 端末から届いた操作の検証と、記録する項目の絞り込みは、ゲームの側で行う。代行（proxy）のような「サーバーだけが記録する操作」があるゲームでは、端末から届いた操作を決まった種類と項目に絞り、その操作を端末から送れないようにする
 - `reject` は、`game` を変える前に呼ぶ（保存はしないが、ビューは変えたあとの状態で作られるため）
 - `onPlayerGone` などのフックで `game` を読んだら、変えたものとして保存してビューを送る。何も変えないときは `ignore()` を呼ぶ
 
@@ -198,7 +198,7 @@ await net.createRoom(name);          // joinRoom(code, name) / resume()
 net.send('solved', { round: 1 });    // ゲームの操作（今の matchId を付けて送る）
 net.start(); net.ready(); net.backToLobby(); net.setSettings({ winsNeeded: 2 }); net.stamp('👍'); net.leave();
 net.serverNow();                     // サーバーの今の時刻（toLocalTime(serverTime) で端末の時刻に直す）
-net.inviteUrl(); net.setRoomUrl(code); NetplayClient.roomCodeFromUrl();
+net.inviteUrl(); net.setRoomUrl(code); NetplayClient.roomCodeFromUrl();  // 招待URLには ?server= を残す（keepParams で変えられる）
 ```
 
 - 接続中は5分ごとに ping を送る（API Gateway の WebSocket は、10分間何も送らないと切れる）。切れたら（2時間で必ず切れる）同じ席につなぎ直す。スマホのスリープから戻ったときは、待たずにつなぎ直す
@@ -273,7 +273,7 @@ node examples/e2e.mjs
 
 ### 手元で複数のゲームを同時に動かす
 
-テスト用サーバーの既定のポートは 8787。ほかのゲームのテスト用サーバーと同時に動かすときは、`PORT=8788 npm run dev:server` のようにポートを変え、画面は `?server=ws://localhost:8788` を付けて開く。
+テスト用サーバーの既定のポートは 8787。ほかのゲームのテスト用サーバーと同時に動かすときは、`PORT=8788 npm run dev:server` のようにポートを変え、画面は `?server=ws://localhost:8788` を付けて開く。招待URLにも `?server=` が残るので、招待された側も同じサーバーにつながる。
 
 ### テストの道具
 
