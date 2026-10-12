@@ -260,15 +260,12 @@
                     this.saveSession(this.session);
                     break;
                 case 'lobby':
-                    this.lobby = message;
-                    this.seat = message.seat;
-                    this.matchId = message.matchId;
-                    if (this.session && this.session.seat !== message.seat) {
-                        this.session.seat = message.seat;
-                        this.saveSession(this.session);
+                    // まだ見せていない state（CPU の手）があれば、その後ろに並べる（state より先に「対戦後」を知らせないため）
+                    if (message.status !== 'lobby' && (this.stateTimer || this.stateQueue.length > 0)) {
+                        this.stateQueue.push(message);
+                        return;
                     }
-                    // ロビーに戻ったら、まだ見せていない前の対戦のビューを捨てる
-                    if (message.status === 'lobby') this.clearStates();
+                    this.applyLobby(message);
                     break;
                 case 'state':
                     if (message.matchId !== undefined && this.matchId !== null && message.matchId < this.matchId) return;
@@ -292,6 +289,18 @@
             this.emit('message', message);
         }
 
+        applyLobby(message) {
+            this.lobby = message;
+            this.seat = message.seat;
+            this.matchId = message.matchId;
+            if (this.session && this.session.seat !== message.seat) {
+                this.session.seat = message.seat;
+                this.saveSession(this.session);
+            }
+            // ロビーに戻ったら、まだ見せていない前の対戦のビューを捨てる
+            if (message.status === 'lobby') this.clearStates();
+        }
+
         // ping の返事は往復時間の半分を引いて、一番速かったときの値を使う。それ以外は ping が届くまでの仮の値
         updateClock(message) {
             if (!Number.isFinite(message.serverNow)) return;
@@ -307,7 +316,7 @@
             if (this.bestRoundTrip === Infinity) this.clockOffset = message.serverNow - now;
         }
 
-        // CPU の手（cpu: true）は間を置いて1手ずつ届ける
+        // CPU の手（cpu: true）は間を置いて1手ずつ届ける（そのあいだに届いた lobby も、順番を守って届ける）
         enqueueState(message) {
             if (!this.cpuStepDelayMs) {
                 this.emit('state', message);
@@ -330,8 +339,14 @@
                 return;
             }
             this.stateQueue.shift();
-            this.lastStateAt = Date.now();
-            this.emit('state', next);
+            if (next.type === 'lobby') {
+                this.applyLobby(next);
+                this.emit('lobby', next);
+                this.emit('message', next);
+            } else {
+                this.lastStateAt = Date.now();
+                this.emit('state', next);
+            }
             this.playStates();
         }
 

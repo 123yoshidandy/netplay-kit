@@ -292,6 +292,18 @@ describe('サンプル③：早解き', () => {
         expect(a.last('lobby').status).toBe('lobby');
     });
 
+    it('対戦が終わるときは、最後のビューを先に、部屋の状態（ended）をあとに送る。開始のときは部屋の状態が先', async () => {
+        const { clients: [a, b] } = await startRace(['A', 'B'], 1);
+        const types = (client) => client.messages.map(m => m.type === 'lobby' ? `lobby:${m.status}` : m.type);
+        expect(types(a).slice(-2)).toEqual(['lobby:playing', 'state']);
+        a.clear();
+        b.clear();
+        await b.send('solved', { round: 1 });
+        expect(types(a)).toEqual(['state', 'lobby:ended']);
+        expect(types(b)).toEqual(['state', 'lobby:ended']);
+        expect(a.last('state').view.round.winner).toBe(1);
+    });
+
     it('対戦後はホストが「開始」で再戦できる', async () => {
         const { clients: [a, b] } = await startRace(['A', 'B'], 1);
         await b.send('solved', { round: 1 });

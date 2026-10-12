@@ -150,7 +150,7 @@ export class RoomService {
             }
             try {
                 await this.saveRoom(room);
-                await this.flush([...this.lobbyMessagesIfChanged(room, lobbyBefore), ...outbox]);
+                await this.flush(this.withLobby(room, lobbyBefore, outbox));
                 return;
             } catch (error) {
                 if (!(error instanceof ConflictError)) throw error;
@@ -190,7 +190,7 @@ export class RoomService {
 
         // 保存するのは、部屋が変わったときだけ（期限切れの処理を含む）
         if (outbox.save || deadline.save) await this.saveRoom(room);
-        return [...deadline.outbox, ...this.lobbyMessagesIfChanged(room, lobbyBefore), ...outbox];
+        return this.withLobby(room, lobbyBefore, [...deadline.outbox, ...outbox]);
     }
 
     // ===== 部屋に入る =====
@@ -252,7 +252,7 @@ export class RoomService {
             const since = this.game.joinMark ? this.game.joinMark(game) : null;
             messages.push(this.stateMessage(room, game, seat, since));
         }
-        const others = [...this.lobbyMessagesIfChanged(room, lobbyBefore), ...outbox]
+        const others = this.withLobby(room, lobbyBefore, outbox)
             .filter(entry => entry.connectionId !== connectionId);
         return [...messages, ...others];
     }
@@ -278,8 +278,7 @@ export class RoomService {
         this.connectionCache.delete(connectionId);
         return [
             { connectionId, message: { type: 'left' } },
-            ...this.lobbyMessagesIfChanged(room, lobbyBefore),
-            ...outbox.filter(entry => entry.connectionId !== connectionId),
+            ...this.withLobby(room, lobbyBefore, outbox).filter(entry => entry.connectionId !== connectionId),
             ...started
         ];
     }
@@ -547,6 +546,15 @@ export class RoomService {
     // 部屋の状態が変わったときだけ、全員に送り直す
     lobbyKey(room) {
         return JSON.stringify(this.lobbyState(room));
+    }
+
+    // 部屋の状態（変わったときだけ）と、ほかのメッセージを並べる
+    // ふだんは部屋の状態を先に送る。対戦が終わったときだけ、最後の操作を反映したビューを先に送る
+    // （終わったことを知った端末が、勝者の決まる前のビューで「対戦後の画面」を描かないように）
+    withLobby(room, before, outbox) {
+        const lobby = this.lobbyMessagesIfChanged(room, before);
+        const justEnded = room.status === 'ended' && JSON.parse(before).status !== 'ended';
+        return justEnded ? [...outbox, ...lobby] : [...lobby, ...outbox];
     }
 
     lobbyMessagesIfChanged(room, before) {

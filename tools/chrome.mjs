@@ -83,6 +83,9 @@ export async function connectChrome(webSocketDebuggerUrl) {
         const { sessionId } = await cdp('Target.attachToTarget', { targetId, flatten: true });
         await cdp('Page.enable', {}, sessionId);
         await cdp('Runtime.enable', {}, sessionId);
+        // ファイルを直したあとの試験で、古い JS をキャッシュから読まないようにする
+        await cdp('Network.enable', {}, sessionId);
+        await cdp('Network.setCacheDisabled', { cacheDisabled: true }, sessionId);
         if (onConsole) consoleListeners.set(sessionId, onConsole);
         if (mobile) {
             await cdp('Emulation.setDeviceMetricsOverride', { width: 375, height: 667, deviceScaleFactor: 2, mobile: true }, sessionId);

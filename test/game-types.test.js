@@ -208,7 +208,10 @@ describe('サンプル②：中継の型', () => {
         expect(a.last('lobby').players[1].connected).toBe(false);
 
         const second = await startRelay();
+        second.a.clear();
         await second.b.send('leave');
+        // 退出で対戦が終わるときも、最後のビューが先に届く
+        expect(second.a.messages.map(m => m.type === 'lobby' ? m.status : m.type)).toEqual(['state', 'ended']);
         expect(second.a.last('lobby').status).toBe('ended');
         expect(second.a.last('state').view.wins).toEqual([1, 0]);
     });

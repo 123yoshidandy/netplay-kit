@@ -124,6 +124,37 @@ describe('NetplayClient の CPU の手の見せ方', () => {
     });
 });
 
+describe('NetplayClient の届く順番', () => {
+    it('CPU の手を見せているあいだに届いた部屋の状態（ended）は、最後のビューのあとに知らせる', async () => {
+        const net = new NetplayClient({ storageKey: 'test.order', cpuStepDelayMs: 30 });
+        const order = [];
+        net.on('state', message => order.push(`state:${message.view.step}`));
+        net.on('lobby', message => order.push(`lobby:${message.status}`));
+        net.receive({ type: 'lobby', status: 'playing', matchId: 1, seat: 0, hostSeat: 0 });
+        net.receive({ type: 'state', matchId: 1, view: { step: 1 } });
+        net.receive({ type: 'state', matchId: 1, view: { step: 2 }, cpu: true });
+        net.receive({ type: 'state', matchId: 1, view: { step: 3 }, cpu: true });
+        net.receive({ type: 'lobby', status: 'ended', matchId: 1, seat: 0, hostSeat: 0 });
+        expect(net.lobby.status).toBe('playing');
+        await waitFor(() => order.length === 5);
+        expect(order).toEqual(['lobby:playing', 'state:1', 'state:2', 'state:3', 'lobby:ended']);
+        expect(net.lobby.status).toBe('ended');
+    });
+
+    it('ロビーに戻ったら、まだ見せていない前の対戦のビューを捨てる', () => {
+        const net = new NetplayClient({ storageKey: 'test.order2', cpuStepDelayMs: 1000 });
+        const order = [];
+        net.on('state', () => order.push('state'));
+        net.on('lobby', message => order.push(`lobby:${message.status}`));
+        net.receive({ type: 'state', matchId: 1, view: {} });
+        net.receive({ type: 'state', matchId: 1, view: {}, cpu: true });
+        net.receive({ type: 'lobby', status: 'lobby', matchId: 1, seat: 0, hostSeat: 0 });
+        expect(order).toEqual(['state', 'lobby:lobby']);
+        expect(net.stateQueue).toEqual([]);
+        net.close();
+    });
+});
+
 describe('読み込み方', () => {
     it('普通の <script> として読んでも（モジュールでなくても）NetplayClient が置かれる', () => {
         const code = fs.readFileSync(new URL('../client/netplay-client.js', import.meta.url), 'utf8');
