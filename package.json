@@ -1,0 +1,16 @@
+{
+  "name": "netplay-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "sync": "node scripts/sync.mjs",
+    "check": "node scripts/sync.mjs check"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "vitest": "^5.0.3",
+    "ws": "^8.22.0"
+  }
+}

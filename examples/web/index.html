@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>netplay-kit の試し</title>
+    <style>
+        body { font-family: sans-serif; margin: 16px; }
+        button { margin: 4px 4px 4px 0; }
+        pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <!-- 通し試験（examples/e2e.mjs）用の最小の画面。サンプル②（中継）の部屋を操作する -->
+    <input id="name" placeholder="名前">
+    <input id="code" placeholder="部屋番号" inputmode="numeric">
+    <div>
+        <button id="create">部屋を作る</button>
+        <button id="join">参加する</button>
+        <button id="start">開始</button>
+        <button id="attack">攻撃を送る</button>
+        <button id="stamp">👍</button>
+        <button id="leave">部屋を出る</button>
+    </div>
+    <p id="status">未接続</p>
+    <pre id="log"></pre>
+
+    <!-- ビルドなしの <script> 読み込み（mine-blocks と同じ形） -->
+    <script src="../../client/netplay-client.js"></script>
+    <script>
+        const $ = (id) => document.getElementById(id);
+        const net = new NetplayClient({
+            serverUrl: NetplayClient.resolveServerUrl({ deployed: null }),
+            storageKey: 'netplayKit.example'
+        });
+        const received = [];
+        window.net = net;
+        window.received = received;
+
+        net.on('message', (message) => {
+            received.push(message);
+            $('log').textContent = received.map(m => m.type).join(' ');
+        });
+        net.on('connection', (connected) => { $('status').textContent = connected ? '接続中' : '切断'; });
+        net.on('joined', (joined) => net.setRoomUrl(joined.roomCode));
+        net.on('left', () => net.setRoomUrl(null));
+
+        $('create').onclick = () => net.createRoom($('name').value);
+        $('join').onclick = () => net.joinRoom($('code').value, $('name').value);
+        $('start').onclick = () => net.start();
+        $('attack').onclick = () => net.send('relay', { kind: 'attack', data: { lines: 2 } });
+        $('stamp').onclick = () => net.stamp('👍');
+        $('leave').onclick = () => net.leave();
+
+        // 招待URL（?room=）で開いたら部屋番号を入れ、前に入った部屋なら同じ席に戻る
+        const roomCode = NetplayClient.roomCodeFromUrl();
+        if (roomCode) {
+            $('code').value = roomCode;
+            if (net.session?.roomCode === roomCode) net.resume();
+        }
+    </script>
+</body>
+</html>

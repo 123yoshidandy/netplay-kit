@@ -1,0 +1,135 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import NetplayClient from '../client/netplay-client.mjs';
+import { startDevServer } from '../server/dev-server.js';
+import relayGame from '../examples/relay-game.js';
+import turnGame from '../examples/turn-game.js';
+
+// 条件を満たすまで待つ
+async function waitFor(check, timeout = 2000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        if (check()) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error('待ちきれませんでした');
+}
+
+// 届いたメッセージを type ごとに記録する
+function record(client, types) {
+    const log = [];
+    types.forEach(type => client.on(type, message => log.push({ type, message })));
+    return log;
+}
+
+describe('NetplayClient（手元のテスト用サーバーにつなぐ）', () => {
+    let dev;
+    let url;
+
+    beforeAll(() => {
+        const port = 18787 + Math.floor(Math.random() * 1000);
+        dev = startDevServer(relayGame, { port, log: () => {} });
+        url = `ws://localhost:${port}`;
+    });
+    afterAll(() => dev.close());
+
+    it('部屋を作って参加し、対戦の開始・中継・時計の補正・退出ができる', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.a' });
+        const b = new NetplayClient({ serverUrl: url, storageKey: 'test.b' });
+        const logA = record(a, ['joined', 'lobby', 'state', 'pong']);
+        const logB = record(b, ['joined', 'lobby', 'state', 'relay', 'left']);
+
+        await a.createRoom('あお');
+        await waitFor(() => a.lobby);
+        expect(a.isHost()).toBe(true);
+        expect(logA.filter(entry => entry.type !== 'pong').map(entry => entry.type)).toEqual(['joined', 'lobby']);
+
+        await b.joinRoom(a.lobby.roomCode, 'みどり');
+        await waitFor(() => a.lobby.players.length === 2 && b.lobby);
+        expect(b.seat).toBe(1);
+        expect(b.isHost()).toBe(false);
+
+        a.start();
+        await waitFor(() => logB.some(entry => entry.type === 'state'));
+        expect(b.matchId).toBe(1);
+
+        a.send('relay', { kind: 'attack', data: { lines: 3 } });
+        await waitFor(() => logB.some(entry => entry.type === 'relay'));
+        expect(logB.find(entry => entry.type === 'relay').message.data).toEqual({ lines: 3 });
+
+        // 接続したときの ping の返事で、時計のずれを直している
+        await waitFor(() => logA.some(entry => entry.type === 'pong'));
+        expect(Math.abs(a.serverNow() - Date.now())).toBeLessThan(100);
+
+        b.leave();
+        await waitFor(() => logB.some(entry => entry.type === 'left'));
+        expect(b.session).toBeNull();
+        expect(b.isInRoom()).toBe(false);
+        await waitFor(() => a.lobby.status === 'ended');
+        a.close();
+    });
+
+    it('接続が切れたら、同じ席に自動でつなぎ直す', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.c', reconnectDelayMs: 50 });
+        const connection = [];
+        a.on('connection', connected => connection.push(connected));
+        await a.createRoom('あお');
+        await waitFor(() => a.lobby);
+        const token = a.session.token;
+
+        a.socket.close();
+        await waitFor(() => connection.length >= 3 && a.isOpen());
+        await waitFor(() => a.lobby?.players[0].connected);
+        expect(connection).toEqual([true, false, true]);
+        expect(a.session.token).toBe(token);
+        expect(a.seat).toBe(0);
+        a.close();
+    });
+
+    it('部屋が消えていたら、保存した参加情報を消す', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.d' });
+        a.session = { roomCode: '99999', token: 'old', seat: 0 };
+        const errors = record(a, ['error']);
+        await a.resume();
+        await waitFor(() => errors.length > 0);
+        expect(errors[0].message.code).toBe('room_not_found');
+        expect(a.session).toBeNull();
+        a.close();
+    });
+});
+
+describe('NetplayClient の CPU の手の見せ方', () => {
+    it('cpu: true の state は、1通ずつ別々に届いても間を置いて順に届く', async () => {
+        const port = 19787 + Math.floor(Math.random() * 1000);
+        const dev = startDevServer(turnGame, { port, log: () => {} });
+        const a = new NetplayClient({ serverUrl: `ws://localhost:${port}`, storageKey: 'test.e', cpuStepDelayMs: 40 });
+        const times = [];
+        a.on('state', message => times.push({ at: Date.now(), cpu: Boolean(message.cpu) }));
+
+        await a.createRoom('あお');
+        await waitFor(() => a.lobby);
+        a.addCpu();
+        a.addCpu();
+        await waitFor(() => a.lobby.players.length === 3);
+        a.start();
+        await waitFor(() => times.length === 1);
+        a.send('command', { command: { type: 'add', amount: 1 } });
+        await waitFor(() => times.length === 4);
+        expect(times.slice(1).map(t => t.cpu)).toEqual([false, true, true]);
+        expect(times[3].at - times[2].at).toBeGreaterThanOrEqual(35);
+
+        a.close();
+        await dev.close();
+    });
+});
+
+describe('読み込み方', () => {
+    it('普通の <script> として読んでも（モジュールでなくても）NetplayClient が置かれる', () => {
+        const code = fs.readFileSync(new URL('../client/netplay-client.js', import.meta.url), 'utf8');
+        const context = vm.createContext({});
+        vm.runInContext(code, context);
+        expect(typeof context.NetplayClient).toBe('function');
+        expect(Object.keys(context)).toEqual(['NetplayClient']);
+    });
+});
