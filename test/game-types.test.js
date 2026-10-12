@@ -176,6 +176,16 @@ describe('サンプル②：中継の型', () => {
         expect(b2.last('relay').data).toBe(2);
     });
 
+    it('ゲームが足した開始の条件（全員の接続）を満たさなければ、理由を返して始めない', async () => {
+        const game = { ...relayGame, canStart: (lobby) => lobby.players.every(p => p.connected) ? null : '2人そろってから開始してください' };
+        const server = createTestServer(game);
+        const [a, b] = await server.createRoom(['A', 'B']);
+        await b.disconnect();
+        await a.send('start');
+        expect(a.last('error')).toMatchObject({ message: '2人そろってから開始してください', code: 'cannot_start' });
+        expect(a.last('lobby').status).toBe('lobby');
+    });
+
     it('負けを申告すると相手の勝ち。2人とも「もう1回」を押すと、勝ち数を引き継いで始まる', async () => {
         const { a, b, matchId } = await startRelay();
         await b.send('lose', { matchId });

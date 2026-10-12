@@ -79,6 +79,9 @@ export default {
         chat: { when: 'any', handle(ctx) { /* ロビーでも受け付ける（既定の 'playing' は対戦中だけ） */ } }
     },
 
+    // 開始の条件を足す（lobby は部屋の状態）。始められない理由を返すと断り、null なら始める
+    canStart: (lobby) => lobby.players.every(p => p.connected) ? null : '全員そろってから開始してください',
+
     isOver: (game) => game.phase === 'end',      // true になったら status を 'ended' にする
     carryOver: (game, carry) => ({ wins }),      // 対戦が終わったとき、次の対戦に残すもの（通算の勝ち数など）
 
@@ -157,7 +160,7 @@ export default {
 | `joined` | `{ roomCode, seat, token, playerId }` 部屋に入った（再接続の情報として保存する） |
 | `lobby` | `{ roomCode, status, matchId, hostSeat, rematch, settings, players, seat }` 部屋の状態。対戦中も、参加者が変わるたびに届く。`seat` は受け取る人の今の席 |
 | `state` | `{ matchId, view, cpu? }` 自分のビュー |
-| `error` | `{ message, code }`（`room_not_found`・`not_member`・`room_full`・`already_started`・`not_host`・`not_enough_players`・`rejected`・`busy`・`invalid`） |
+| `error` | `{ message, code }`（`room_not_found`・`not_member`・`room_full`・`already_started`・`not_host`・`not_enough_players`・`cannot_start`・`rejected`・`busy`・`invalid`） |
 | `left` / `pong` `{ clientTime }` / `stamp` `{ seat, stamp }` | 退出した / ping の返事 / スタンプ |
 | それ以外 | ゲーム独自のメッセージ（`ctx.reply` などで送ったもの） |
 

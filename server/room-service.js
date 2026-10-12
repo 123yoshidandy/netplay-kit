@@ -344,6 +344,9 @@ export class RoomService {
         if (players.length < this.game.minPlayers) {
             throw new GameError(`${this.game.minPlayers}人以上で始めてください`, 'not_enough_players');
         }
+        // ゲームが足す開始の条件（全員が接続しているときだけ、など）。理由を返したら始めない
+        const reason = this.game.canStart?.(this.lobbyState(room));
+        if (reason) throw new GameError(reason, 'cannot_start');
         room.players.forEach(player => { player.ready = false; });
         room.status = 'playing';
         room.matchId += 1;
