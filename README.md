@@ -136,6 +136,13 @@ export default {
 - ホストは「退出していない最初の人間」（接続中の人を優先）。席0が抜けても、次の人が引き継ぐ
 - 席番号は接続の記録に持たず、部屋の players から connectionId で求める（席が詰まってもずれない）
 
+### 部屋番号
+
+- 部屋番号は数字4桁（スマホの数字キーボードで入れやすい）。使用中の部屋とぶつかったら、別の番号で作り直す
+- 部屋は最後の操作から `roomTtlSeconds`（既定2日）で期限を迎える。期限を過ぎた部屋は、DynamoDB の TTL で消える前でも「ない」ものとして扱い、その番号は新しい部屋に使う
+- 画面では桁数を直接書かず、`NetplayClient.ROOM_CODE_LENGTH`（入力欄の maxlength や説明の文）と `NetplayClient.isRoomCode(code)`（入力の確認）を使う
+- サーバーは、桁数の違う部屋番号でも参加を断らない（4桁に変える前に作られた5桁の部屋にも、期限までは入れる）
+
 ## メッセージ
 
 すべてのメッセージに `serverNow`（サーバーの時刻）が付く。
@@ -198,6 +205,7 @@ await net.createRoom(name);          // joinRoom(code, name) / resume()
 net.send('solved', { round: 1 });    // ゲームの操作（今の matchId を付けて送る）
 net.start(); net.ready(); net.backToLobby(); net.setSettings({ winsNeeded: 2 }); net.stamp('👍'); net.leave();
 net.serverNow();                     // サーバーの今の時刻（toLocalTime(serverTime) で端末の時刻に直す）
+NetplayClient.isRoomCode(code);     // 入力された部屋番号の形を確かめる（桁数は NetplayClient.ROOM_CODE_LENGTH）
 net.inviteUrl(); net.setRoomUrl(code); NetplayClient.roomCodeFromUrl();  // 招待URLには ?server= を残す（keepParams で変えられる）
 ```
 

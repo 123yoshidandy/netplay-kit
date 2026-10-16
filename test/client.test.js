@@ -155,6 +155,15 @@ describe('NetplayClient の届く順番', () => {
     });
 });
 
+describe('部屋番号の形', () => {
+    it('数字4桁だけを部屋番号として受け付け、前後の空白は無視する', () => {
+        expect(NetplayClient.ROOM_CODE_LENGTH).toBe(4);
+        expect(NetplayClient.isRoomCode('0123')).toBe(true);
+        expect(NetplayClient.isRoomCode(' 4567 ')).toBe(true);
+        expect(['123', '12345', '12a4', '', null, undefined].some(code => NetplayClient.isRoomCode(code))).toBe(false);
+    });
+});
+
 describe('招待URL', () => {
     it('部屋番号を入れ、接続先の ?server= は残し、ほかの項目は外す', () => {
         const saved = globalThis.location;

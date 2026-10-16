@@ -28,10 +28,14 @@ export class DynamoStore {
         return this.getItem(`ROOM#${code}`);
     }
 
-    // 読み込んだときの版のままなら保存する（新しい部屋は、同じ番号の部屋がないときだけ作る）
-    async putRoom(room, previousVersion) {
+    // 読み込んだときの版のままなら保存する
+    // 新しい部屋は、同じ番号の部屋がないか、あっても期限（nowSeconds）を過ぎているときだけ作る
+    async putRoom(room, previousVersion, nowSeconds = Math.floor(Date.now() / 1000)) {
         const condition = previousVersion === 0
-            ? { ConditionExpression: 'attribute_not_exists(pk)' }
+            ? {
+                ConditionExpression: 'attribute_not_exists(pk) OR expiresAt <= :now',
+                ExpressionAttributeValues: { ':now': nowSeconds }
+            }
             : { ConditionExpression: 'version = :previous', ExpressionAttributeValues: { ':previous': previousVersion } };
         try {
             await this.client.send(new PutCommand({

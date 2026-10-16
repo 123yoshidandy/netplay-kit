@@ -21,8 +21,9 @@ const DEFAULTS = {
     messagesBurst: 20
 };
 const CODE_ALPHABET = '0123456789'; // 部屋番号は数字だけ（スマホの数字キーボードで入れやすい）
-const CODE_LENGTH = 5;
+export const ROOM_CODE_LENGTH = 4; // 部屋番号の桁数（画面側の NetplayClient.ROOM_CODE_LENGTH と同じにする）
 const MAX_RETRIES = 3;              // 同時に操作されて保存がぶつかったときのやり直し回数
+const MAX_CODE_ATTEMPTS = 10;       // 部屋番号が使用中の部屋とぶつかったときに作り直す回数
 const CONNECTION_CACHE_SIZE = 1000;
 
 // 共通側が受け付ける操作（ゲームの定義の actions に同じ名前は使えない）
@@ -139,7 +140,7 @@ export class RoomService {
         if (!connection) return;
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            const room = await this.store.getRoom(connection.roomCode);
+            const room = await this.loadRoom(connection.roomCode);
             const seat = room ? this.seatOf(room, connectionId) : -1;
             if (seat < 0) return;
             const lobbyBefore = this.lobbyKey(room);
@@ -214,7 +215,7 @@ export class RoomService {
                 await this.saveRoom(room);
                 break;
             } catch (error) {
-                if (!(error instanceof ConflictError) || attempt >= 5) throw error;
+                if (!(error instanceof ConflictError) || attempt >= MAX_CODE_ATTEMPTS - 1) throw error;
             }
         }
         await this.putConnection(connectionId, room.code);
@@ -224,7 +225,7 @@ export class RoomService {
     // 部屋に参加する。token が参加者のものなら、その席に再接続する（対戦中でも戻れる。退出した人は戻れない）
     // 再接続したら joined → lobby → state の順で送る
     async joinRoom(connectionId, { roomCode, name, token }) {
-        const room = await this.store.getRoom(String(roomCode ?? '').trim());
+        const room = await this.loadRoom(String(roomCode ?? '').trim());
         if (!room) throw new GameError('部屋が見つかりません', 'room_not_found');
         const lobbyBefore = this.lobbyKey(room);
 
@@ -470,7 +471,7 @@ export class RoomService {
         room.version = previousVersion + 1;
         room.expiresAt = this.expiresAt();
         try {
-            await this.store.putRoom(room, previousVersion);
+            await this.store.putRoom(room, previousVersion, Math.floor(this.now() / 1000));
         } catch (error) {
             room.version = previousVersion;
             throw error;
@@ -595,13 +596,13 @@ export class RoomService {
     async loadMember(connectionId, { quiet = false } = {}) {
         const cachedCode = this.connectionCache.get(connectionId);
         if (cachedCode) {
-            const room = await this.store.getRoom(cachedCode);
+            const room = await this.loadRoom(cachedCode);
             const seat = room ? this.seatOf(room, connectionId) : -1;
             if (seat >= 0) return { room, seat };
             this.connectionCache.delete(connectionId);
         }
         const connection = await this.store.getConnection(connectionId);
-        const room = connection ? await this.store.getRoom(connection.roomCode) : null;
+        const room = connection ? await this.loadRoom(connection.roomCode) : null;
         const seat = room ? this.seatOf(room, connectionId) : -1;
         if (seat < 0) {
             if (quiet) return { room: null, seat: -1 };
@@ -617,6 +618,14 @@ export class RoomService {
         if (this.connectionCache.size > CONNECTION_CACHE_SIZE) {
             this.connectionCache.delete(this.connectionCache.keys().next().value);
         }
+    }
+
+    // 部屋を読む。期限（expiresAt）を過ぎた部屋はないものとして扱う
+    // （DynamoDB の TTL は、期限を過ぎてもすぐには消さないため。部屋番号が4桁で数が少ないので、番号をふさがないようにする）
+    async loadRoom(code) {
+        const room = await this.store.getRoom(code);
+        if (!room || (room.expiresAt && room.expiresAt <= Math.floor(this.now() / 1000))) return null;
+        return room;
     }
 
     seatOf(room, connectionId) {
@@ -663,7 +672,7 @@ export class RoomService {
     }
 
     createRoomCode() {
-        return Array.from({ length: CODE_LENGTH },
+        return Array.from({ length: ROOM_CODE_LENGTH },
             () => CODE_ALPHABET[Math.floor(this.random() * CODE_ALPHABET.length)]).join('');
     }
 

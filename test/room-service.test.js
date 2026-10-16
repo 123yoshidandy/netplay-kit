@@ -5,11 +5,11 @@ import { createTestServer } from '../server/testing.js';
 import raceGame, { COUNTDOWN_MS } from '../examples/race-game.js';
 
 describe('部屋の作成と参加', () => {
-    it('部屋を作ると5桁の部屋番号と席0が返り、自分がホストになる', async () => {
+    it('部屋を作ると4桁の部屋番号と席0が返り、自分がホストになる', async () => {
         const server = createTestServer(raceGame);
         const [a] = await server.createRoom(['あお']);
         const joined = a.last('joined');
-        expect(joined.roomCode).toMatch(/^\d{5}$/);
+        expect(joined.roomCode).toMatch(/^\d{4}$/);
         expect(joined.seat).toBe(0);
         expect(joined.token).toBeTruthy();
         const lobby = a.last('lobby');
@@ -39,7 +39,7 @@ describe('部屋の作成と参加', () => {
         expect(b.last('joined').seat).toBe(1);
 
         const x = server.connect();
-        await x.send('join', { roomCode: '00000', name: 'X' });
+        await x.send('join', { roomCode: '99999', name: 'X' });
         expect(x.last('error')).toMatchObject({ message: '部屋が見つかりません', code: 'room_not_found' });
     });
 
@@ -81,6 +81,44 @@ describe('部屋の作成と参加', () => {
         const x = server.connect();
         await x.send('start');
         expect(x.last('error').code).toBe('not_member');
+    });
+});
+
+describe('部屋の期限', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    it('期限を過ぎた部屋は、まだ消えていなくても見つからない扱いにする', async () => {
+        const server = createTestServer(raceGame);
+        const [a] = await server.createRoom(['A']);
+        server.clock.now += 2 * DAY_MS + 1000;
+        const b = server.connect();
+        await b.send('join', { roomCode: a.last('joined').roomCode, name: 'B' });
+        expect(b.last('error').code).toBe('room_not_found');
+        await a.send('setSettings', { settings: { winsNeeded: 2 } });
+        expect(a.last('error').code).toBe('not_member');
+    });
+
+    it('期限を過ぎた部屋と番号がぶつかったら、新しい部屋で上書きする', async () => {
+        const server = createTestServer(raceGame);
+        const [a] = await server.createRoom(['A']);
+        const code = a.last('joined').roomCode;
+        server.clock.now += 2 * DAY_MS + 1000;
+        server.service.createRoomCode = () => code;
+        const [c] = await server.createRoom(['C']);
+        expect(c.last('joined').roomCode).toBe(code);
+        expect(c.last('lobby').players.map(p => p.name)).toEqual(['C']);
+        expect(c.last('error')).toBeUndefined();
+    });
+
+    it('期限の前の部屋とぶつかったら、別の番号で作り直す', async () => {
+        const server = createTestServer(raceGame);
+        const [a] = await server.createRoom(['A']);
+        const code = a.last('joined').roomCode;
+        const codes = [code, code, '1234'];
+        server.service.createRoomCode = () => codes.shift();
+        const [c] = await server.createRoom(['C']);
+        expect(c.last('joined').roomCode).toBe('1234');
+        expect(a.last('lobby').players.map(p => p.name)).toEqual(['A']);
     });
 });
 

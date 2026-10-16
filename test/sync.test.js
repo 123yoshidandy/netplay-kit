@@ -71,6 +71,6 @@ describe('同期の仕組み', () => {
         const { default: race } = await import('../examples/race-game.js');
         const server = createTestServer(race);
         const [a] = await server.createRoom(['A']);
-        expect(a.last('joined').roomCode).toMatch(/^\d{5}$/);
+        expect(a.last('joined').roomCode).toMatch(/^\d{4}$/);
     });
 });

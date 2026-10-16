@@ -57,6 +57,11 @@
             }
         }
 
+        // 部屋番号の形（数字4桁）。前後の空白は無視する。サーバーの ROOM_CODE_LENGTH と同じにする
+        static isRoomCode(code) {
+            return new RegExp(`^\\d{${NetplayClient.ROOM_CODE_LENGTH}}$`).test(String(code ?? '').trim());
+        }
+
         // ?server=wss://... で接続先を変えられる。手元（localhost）で開いたときはテスト用サーバーにつなぐ
         static resolveServerUrl({ deployed, local = 'ws://localhost:8787' }) {
             if (typeof location === 'undefined') return deployed;
@@ -418,5 +423,6 @@
         }
     }
 
+    NetplayClient.ROOM_CODE_LENGTH = 4; // 部屋番号の桁数（入力欄の maxlength や説明の文に使う）
     globalThis.NetplayClient = NetplayClient;
 })();

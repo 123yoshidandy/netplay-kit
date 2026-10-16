@@ -20,9 +20,12 @@ export class MemoryStore {
         return clone(this.rooms.get(code)) ?? null;
     }
 
-    async putRoom(room, previousVersion) {
+    // 新しい部屋（previousVersion が 0）は、同じ番号の部屋がないか、あっても期限を過ぎているときだけ作る
+    async putRoom(room, previousVersion, nowSeconds = Math.floor(Date.now() / 1000)) {
         const current = this.rooms.get(room.code);
-        if ((current?.version ?? 0) !== previousVersion) {
+        const expired = current?.expiresAt !== undefined && current.expiresAt <= nowSeconds;
+        const currentVersion = !current || (previousVersion === 0 && expired) ? 0 : current.version;
+        if (currentVersion !== previousVersion) {
             throw new ConflictError();
         }
         this.writes++;
