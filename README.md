@@ -1,6 +1,6 @@
 # netplay-kit
 
-ブラウザゲーム（dominion・lucky-numbers・panel-de-pon・mine-blocks・wordle）に共通の、オンライン対戦の部屋の仕組み。
+ブラウザゲーム（dominion・lucky-numbers・panel-de-pon・mine-blocks・wordle・katan）に共通の、オンライン対戦の部屋の仕組み。
 
 - 部屋の作成・参加・再接続・退出・ホストの引き継ぎ・開始・再戦・CPU・スタンプ・接続の生存確認を、ゲームに共通の部品として持つ
 - ゲームの中身は「ゲームの定義」として外から差し込む（共通部品からゲームのコードは import しない）
