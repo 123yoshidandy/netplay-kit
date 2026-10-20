@@ -262,7 +262,7 @@ node scripts/sync.mjs check ~/MyProjects/mine-blocks
 | ターン制（dominion・lucky-numbers・mine-blocks） | 10 | 20 |
 | 中継（panel-de-pon。1人あたり毎秒5回ほど送る） | 50 | 100 |
 
-- 料金の通知（AWS Budgets）はアカウント全体で1つ（dominion のスタック）にするので、ここには入れない
+- 料金の通知（AWS Budgets）は、組織が管理するアカウント全体の通知（実績・予測が 20 ドルごとに知らせる）に任せる。ゲームのスタックには入れない
 - ping も受け付け上限に数える（1人あたり5分に1回なので、ほとんど増えない）
 
 ## 開発
