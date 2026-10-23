@@ -101,6 +101,11 @@ Resources:
   # CloudFormation が <ゲーム>-online のスタックを作るときに使うロール
   CloudFormationRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037
     Properties:
       RoleName: !Sub ${GameName}-cfn-deploy
       Description: !Sub Used by CloudFormation to deploy ${GameName}-online
@@ -142,6 +147,7 @@ Resources:
                 Action: logs:DescribeLogGroups
                 Resource: '*'
               # WebSocket の API。ID は乱数で名前から絞れないので、API 全体に許す（このロールを使えるのは CloudFormation だけ）
+              # ステージを新しく作るときは、タグを付ける操作（TagResource）も要る（cfn-lint は知らない操作として警告するので、W3037 は止める）
               - Effect: Allow
                 Action:
                   - apigateway:GET
@@ -149,6 +155,8 @@ Resources:
                   - apigateway:PUT
                   - apigateway:PATCH
                   - apigateway:DELETE
+                  - apigateway:TagResource
+                  - apigateway:UntagResource
                 Resource:
                   - !Sub arn:aws:apigateway:${AWS::Region}::/apis
                   - !Sub arn:aws:apigateway:${AWS::Region}::/apis/*
