@@ -4,7 +4,7 @@
 # - ゲームの名前はリポジトリの名前から取る（ロール <ゲーム>-cfn-deploy と、成果物の置き場所 <ゲーム>-online/ は netplay-kit の template/github-deploy.yaml で作る）
 # - リポジトリは公開なので、AWS のアカウント番号はログで伏せる
 # - テストが通らなければデプロイしない
-name: サーバーのデプロイ
+name: deploy-server
 
 on:
   push:
