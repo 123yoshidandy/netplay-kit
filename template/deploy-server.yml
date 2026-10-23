@@ -1,0 +1,81 @@
+# netplay-kit の見本（同期はしない）。各ゲームの .github/workflows/deploy-server.yml に、そのまま置く
+# オンライン対戦のサーバー（AWS SAM）を、main への push で自動デプロイする
+# - AWS への認証は OIDC で行い、アクセスキーは使わない（ロールの ARN は Secret の AWS_DEPLOY_ROLE_ARN）
+# - ゲームの名前はリポジトリの名前から取る（ロール <ゲーム>-cfn-deploy と、成果物の置き場所 <ゲーム>-online/ は netplay-kit の template/github-deploy.yaml で作る）
+# - リポジトリは公開なので、AWS のアカウント番号はログで伏せる
+# - テストが通らなければデプロイしない
+name: サーバーのデプロイ
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'netplay-kit.lock.json'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+# デプロイを同時に2つ動かさない（後から来たものは、前のものが終わるのを待つ）
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+env:
+  GAME: ${{ github.event.repository.name }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリを取り出す
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Node.js 22 を用意する
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 依存を入れる
+        run: npm ci
+
+      - name: テスト（失敗したらデプロイしない）
+        run: npm test
+
+      - name: AWS に OIDC で認証する
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-northeast-1
+          mask-aws-account-id: true
+
+      - name: アカウント番号をログで伏せる
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::${account_id}"
+
+      - name: AWS SAM CLI を用意する
+        uses: aws-actions/setup-sam@341eee193f458fa5aae5d52c94b0c5cf3a1c5a52 # v3
+        with:
+          use-installer: true
+
+      - name: サーバーをビルドする
+        run: npm run build:server
+
+      # GitHub 用のロールにできるのは、CloudFormation 用のロール（<ゲーム>-cfn-deploy）を渡して変更セットを作ることと、
+      # 成果物を共有のバケットの <ゲーム>-online/ の下に置くことだけ
+      # ロールの ARN にはアカウント番号が入るので、リポジトリには書かず、ここで組み立てる（番号は前の手順でログから伏せてある）
+      - name: デプロイする
+        working-directory: server
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          sam deploy \
+            --role-arn "arn:aws:iam::${account_id}:role/${GAME}-cfn-deploy" \
+            --s3-prefix "${GAME}-online" \
+            --no-confirm-changeset --no-fail-on-empty-changeset

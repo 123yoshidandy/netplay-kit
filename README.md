@@ -26,6 +26,7 @@
 - `tools/chrome.mjs`: 通し試験の道具（ヘッドレス Chrome を DevTools Protocol で操作する。コピーはしない）
 - `template/template.yaml`: AWS SAM のテンプレートの見本（同期はしない）
 - `template/github-oidc.yaml` / `github-deploy.yaml`: GitHub Actions から自動デプロイするための設定（アカウントに1つの OIDC プロバイダと、ゲームごとのロール。同期はしない）
+- `template/deploy-server.yml`: GitHub Actions のワークフローの見本（各ゲームの `.github/workflows/` にそのままコピーする。同期はしない）
 - `scripts/sync.mjs`: 各ゲームへの同期と確認
 - `test/`: テスト（Vitest）
 
@@ -347,19 +348,25 @@ ARN=$(aws cloudformation describe-stacks --stack-name <ゲーム>-github-deploy 
 gh secret set AWS_DEPLOY_ROLE_ARN --repo 123yoshidandy/<ゲーム> --body "$ARN"
 ```
 
-**4. ワークフロー**
+**4. ワークフローを置く**
 
-`permissions: id-token: write` を付け、`aws-actions/configure-aws-credentials` の `role-to-assume` に `${{ secrets.AWS_DEPLOY_ROLE_ARN }}` を渡す。`sam deploy` には次を付ける。
+`template/deploy-server.yml` を、ゲームの `.github/workflows/deploy-server.yml` にそのままコピーする（mine-blocks で動いたものを元にした見本）。ゲームの名前はリポジトリの名前から取るので、書き換えは要らない。次の前提がそろっていれば動く。
 
-- `--role-arn`: CloudFormation 用のロール（`<ゲーム>-cfn-deploy`）。付けないと、変更セットを作れない
-- `--s3-prefix <ゲーム>-online`: 成果物を置く場所。GitHub 用のロールは、ここにしか置けない
-- `--no-confirm-changeset --no-fail-on-empty-changeset`: samconfig.toml は `confirm_changeset = true` なので、確認を飛ばす
+- samconfig.toml のスタック名が `<リポジトリの名前>-online`
+- package.json に `test` と `build:server` がある
+- サーバーのテンプレートと samconfig.toml が `server/` にある
 
-```sh
-ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-sam deploy --role-arn "arn:aws:iam::$ACCOUNT:role/<ゲーム>-cfn-deploy" --s3-prefix <ゲーム>-online \
-  --no-confirm-changeset --no-fail-on-empty-changeset
-```
+見本がしていること：
+
+- main への push（`server/` や package.json などが変わったとき）と、手動の実行で動く。同時に2つは動かさない
+- テストが通らなければデプロイしない
+- `aws-actions/configure-aws-credentials` に Secret の `AWS_DEPLOY_ROLE_ARN` を渡して、OIDC で認証する。リポジトリは公開なので、アカウント番号はログで伏せる
+- `sam deploy` に、次の引数を付ける
+  - `--role-arn`: CloudFormation 用のロール（`<ゲーム>-cfn-deploy`）。付けないと、変更セットを作れない。ARN にはアカウント番号が入るので、リポジトリには書かず、実行のときに組み立てる
+  - `--s3-prefix <ゲーム>-online`: 成果物を置く場所。GitHub 用のロールは、ここにしか置けない
+  - `--no-confirm-changeset --no-fail-on-empty-changeset`: samconfig.toml は `confirm_changeset = true` なので、確認を飛ばす
+
+使っている Actions は、コミットの番号で固定している。上げるときは、見本を直してから各ゲームにコピーし直す。
 
 一度 `--role-arn` を付けてデプロイすると、そのスタックは以後も CloudFormation 用のロールを使う。手元から `npm run deploy:server` でデプロイしても同じロールが使われるので、権限が足りなければ手元のデプロイも失敗する。権限が足りずに失敗したら、エラーに出た操作を `github-deploy.yaml` に足して、ロールのスタックをデプロイし直す。
 
