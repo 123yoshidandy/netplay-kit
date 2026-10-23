@@ -25,10 +25,21 @@ export function createHandler(game, { tableName = process.env.TABLE_NAME } = {})
             clients.set(endpoint, new ApiGatewayManagementApiClient({ endpoint }));
         }
         const client = clients.get(endpoint);
-        const send = (connectionId, message) => client.send(new PostToConnectionCommand({
-            ConnectionId: connectionId,
-            Data: JSON.stringify(message)
-        }));
+        // 送れなかったら、CloudWatch のログに1行残す（切れた接続の GoneException も、古い接続に送っていないかの手がかりになる）
+        const send = async (connectionId, message) => {
+            try {
+                await client.send(new PostToConnectionCommand({
+                    ConnectionId: connectionId,
+                    Data: JSON.stringify(message)
+                }));
+            } catch (error) {
+                console.log(JSON.stringify({
+                    event: 'send_failed', connectionId, type: message.type, version: message.version,
+                    error: error.name, status: error.$metadata?.httpStatusCode
+                }));
+                throw error;
+            }
+        };
         return new RoomService({ game, store, send, connectionCache, limiter });
     };
 

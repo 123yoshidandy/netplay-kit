@@ -17,8 +17,9 @@ export class DynamoStore {
         this.client = client;
     }
 
+    // 強い整合性で読む（既定の結果整合性では、保存した直後に1つ前の部屋が返ることがあり、古い部屋で操作を判定してしまう）
     async getItem(pk) {
-        const { Item } = await this.client.send(new GetCommand({ TableName: this.tableName, Key: { pk } }));
+        const { Item } = await this.client.send(new GetCommand({ TableName: this.tableName, Key: { pk }, ConsistentRead: true }));
         if (!Item) return null;
         const { pk: _pk, ...data } = Item;
         return data;

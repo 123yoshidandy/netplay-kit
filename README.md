@@ -299,6 +299,8 @@ node scripts/sync.mjs check ~/MyProjects/mine-blocks
 
 - 料金の通知（AWS Budgets）は、組織が管理するアカウント全体の通知（実績・予測が 20 ドルごとに知らせる）に任せる。ゲームのスタックには入れない
 - ping も受け付け上限に数える（1人あたり5分に1回なので、ほとんど増えない）
+- 部屋と接続は、DynamoDB から強い整合性（ConsistentRead）で読む。既定の結果整合性では、保存した直後に1つ前の部屋が返ることがあり、古い部屋で操作を判定してしまう（pokemon-card-game で、版31を送ったあとの操作の返事が版30になった）
+- 端末に送れなかったら、Lambda のログに `{"event":"send_failed", connectionId, type, version, error, status}` を1行残す。返事が届かないと言われたら、CloudWatch Logs で `send_failed` を探す
 
 ### GitHub Actions での自動デプロイ
 
