@@ -6,15 +6,11 @@
 # - テストが通らなければデプロイしない
 name: deploy-server
 
+# main への push のたびに動く（サーバーは画面側の public/js などのロジックも読み込むので、変わったファイルでは絞らない）
+# サーバーに変わりがなければ、sam deploy は「No changes to deploy」で終わる
 on:
   push:
     branches: [main]
-    paths:
-      - 'server/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'netplay-kit.lock.json'
-      - '.github/workflows/deploy-server.yml'
   workflow_dispatch:
 
 permissions:

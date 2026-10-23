@@ -368,7 +368,9 @@ gh secret set AWS_DEPLOY_ROLE_ARN --repo 123yoshidandy/<ゲーム> --body "$ARN"
 
 見本がしていること：
 
-- main への push（`server/` や package.json などが変わったとき）と、手動の実行で動く。同時に2つは動かさない
+- main への push のたびと、手動の実行で動く。同時に2つは動かさない
+  - 変わったファイルでは絞らない。サーバーは、画面側の `public/js/game.js` などのロジックも読み込んでいるので、`server/` だけで絞ると、ルールを直してもサーバーが古いままになる
+  - サーバーに変わりがなければ、`sam deploy` は「No changes to deploy」で終わり、本番には何も起きない
 - テストが通らなければデプロイしない
 - `aws-actions/configure-aws-credentials` に Secret の `AWS_DEPLOY_ROLE_ARN` を渡して、OIDC で認証する。リポジトリは公開なので、アカウント番号はログで伏せる
 - `sam deploy` に、次の引数を付ける
