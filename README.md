@@ -28,6 +28,7 @@
 - `template/github-oidc.yaml` / `github-deploy.yaml`: GitHub Actions から自動デプロイするための設定（アカウントに1つの OIDC プロバイダと、ゲームごとのロール。同期はしない）
 - `template/deploy-server.yml`: GitHub Actions のワークフローの見本（各ゲームの `.github/workflows/` にそのままコピーする。同期はしない）
 - `scripts/sync.mjs`: 各ゲームへの同期と確認
+- `scripts/setup-github-deploy.sh`: ゲームの自動デプロイの用意（ロールのスタックと Secret）
 - `test/`: テスト（Vitest）
 
 ## ゲームの定義
@@ -324,6 +325,14 @@ aws cloudformation deploy \
   --template-file template/github-oidc.yaml \
   --stack-name netplay-github-oidc \
   --region ap-northeast-1 --profile <プロフィール>
+```
+
+**2・3 をまとめて行う**
+
+`scripts/setup-github-deploy.sh` は、ゲームごとにロールのスタックを作り、ロールの ARN を Secret に入れる（手順2・3と同じ）。ゲームは複数並べられる。すでにあるロールは、テンプレートが変わっていなければそのまま。
+
+```sh
+scripts/setup-github-deploy.sh <プロフィール> dominion lucky-numbers
 ```
 
 **2. ゲームのロールを作る（ゲームを足すたび）**
