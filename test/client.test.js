@@ -189,6 +189,27 @@ describe('NetplayClient の届く順番', () => {
         expect(net.lobby.status).toBe('ended');
     });
 
+    it('前に受け取ったものより古い版の state・lobby は捨て、同じ版は受け取る', () => {
+        const net = new NetplayClient({ storageKey: 'test.version' });
+        const order = [];
+        net.on('state', message => order.push(`state:${message.version}`));
+        net.on('lobby', message => order.push(`lobby:${message.version}`));
+        net.receive({ type: 'lobby', status: 'playing', matchId: 1, seat: 0, hostSeat: 0, version: 3 });
+        net.receive({ type: 'state', matchId: 1, view: {}, version: 5 });
+        net.receive({ type: 'state', matchId: 1, view: {}, version: 4 });   // 後から届いた古いビュー
+        net.receive({ type: 'lobby', status: 'playing', matchId: 1, seat: 0, hostSeat: 0, version: 4 });
+        net.receive({ type: 'state', matchId: 1, view: {}, version: 5 });   // 同じ版（断られた操作の返事など）
+        net.receive({ type: 'state', matchId: 1, view: {}, version: 6 });
+        net.receive({ type: 'state', matchId: 1, view: {} });               // 版のない古いサーバー
+        expect(order).toEqual(['lobby:3', 'state:5', 'state:5', 'state:6', 'state:undefined']);
+
+        // 部屋に入り直したら、版を数え直す
+        net.receive({ type: 'joined', roomCode: '1234', seat: 0, token: 't' });
+        net.receive({ type: 'lobby', status: 'lobby', matchId: 0, seat: 0, hostSeat: 0, version: 1 });
+        expect(order.at(-1)).toBe('lobby:1');
+        net.close();
+    });
+
     it('ロビーに戻ったら、まだ見せていない前の対戦のビューを捨てる', () => {
         const net = new NetplayClient({ storageKey: 'test.order2', cpuStepDelayMs: 1000 });
         const order = [];

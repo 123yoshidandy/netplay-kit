@@ -49,6 +49,7 @@
             this.isLeaving = false;
             this.pendingName = null;
             this.joiningRoomCode = null;       // 最後に参加を頼んだ部屋番号
+            this.lastVersion = -Infinity;      // 最後に受け取った lobby・state の部屋の版
 
             // スマホのスリープから戻ったら、待たずにつなぎ直す
             if (typeof document !== 'undefined') {
@@ -304,8 +305,11 @@
 
         receive(message) {
             this.updateClock(message);
+            // 操作ごとに別の Lambda が送るので、届く順は入れ替わりうる。前に受け取ったものより古い版の lobby・state は捨てる
+            if (this.isStale(message)) return;
             switch (message.type) {
                 case 'joined':
+                    this.lastVersion = -Infinity;
                     this.seat = message.seat;
                     this.session = { roomCode: message.roomCode, token: message.token, seat: message.seat, name: this.pendingName ?? this.session?.name };
                     this.saveSession(this.session);
@@ -338,6 +342,14 @@
             }
             this.emit(message.type, message);
             this.emit('message', message);
+        }
+
+        // 部屋の版（version）が、前に受け取った lobby・state より小さければ古い。同じ版（CPU の手など、1回の保存で送ったもの）は捨てない
+        isStale(message) {
+            if (!['lobby', 'state'].includes(message.type) || typeof message.version !== 'number') return false;
+            if (message.version < this.lastVersion) return true;
+            this.lastVersion = message.version;
+            return false;
         }
 
         applyLobby(message) {

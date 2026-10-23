@@ -19,6 +19,18 @@ describe('部屋の作成と参加', () => {
         expect(lobby.settings).toEqual({ winsNeeded: 3 });
     });
 
+    it('部屋の状態とビューには部屋の版が付き、操作のたびに増える', async () => {
+        const server = createTestServer(raceGame);
+        const [a] = await server.createRoom(['A', 'B']);
+        await a.send('start');
+        const versions = a.messages.filter(m => ['lobby', 'state'].includes(m.type)).map(m => m.version);
+        expect(a.all('state').length).toBeGreaterThan(0);
+        expect(versions.every(v => typeof v === 'number')).toBe(true);
+        expect(versions).toEqual([...versions].sort((x, y) => x - y));
+        expect(versions.at(-1)).toBeGreaterThan(versions[0]);
+        expect(a.last('joined').version).toBeUndefined();
+    });
+
     it('参加すると全員に参加者が届き、満員なら断られる', async () => {
         const server = createTestServer(raceGame);
         const clients = await server.createRoom(['A', 'B', 'C', 'D']);
