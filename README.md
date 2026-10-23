@@ -25,7 +25,7 @@
   - `web/index.html` / `e2e.mjs`: 最小の画面と、ヘッドレス Chrome での通し試験の例
 - `tools/chrome.mjs`: 通し試験の道具（ヘッドレス Chrome を DevTools Protocol で操作する。コピーはしない）
 - `template/template.yaml`: AWS SAM のテンプレートの見本（同期はしない）
-- `template/github-deploy.yaml`: GitHub Actions から自動デプロイするための、アカウントに1つの設定（同期はしない）
+- `template/github-oidc.yaml` / `github-deploy.yaml`: GitHub Actions から自動デプロイするための設定（アカウントに1つの OIDC プロバイダと、ゲームごとのロール。同期はしない）
 - `scripts/sync.mjs`: 各ゲームへの同期と確認
 - `test/`: テスト（Vitest）
 
@@ -268,54 +268,72 @@ node scripts/sync.mjs check ~/MyProjects/mine-blocks
 
 ### GitHub Actions での自動デプロイ
 
-`template/github-deploy.yaml` は、各ゲームの main への push を起点に、GitHub Actions からサーバー（`<ゲーム>-online` のスタック）をデプロイするための設定。アカウントに1回だけデプロイする（同期はしない）。
+各ゲームの main への push を起点に、GitHub Actions からサーバー（`<ゲーム>-online` のスタック）をデプロイするための設定。どちらも同期はしない。
 
-- GitHub の OIDC プロバイダと、デプロイ用のロール `netplay-github-deploy` を作る
-- ロールを使えるのは、引数 `Repositories` に並べた 123yoshidandy のリポジトリの main ブランチだけ
-- 権限は sam deploy に要る範囲に絞る。CloudFormation のスタックは `*-online`、Lambda・DynamoDB・ロググループ・Lambda の実行ロールは名前が `*-online-*` のものに限る。API Gateway は ID から名前がわからないので、API 全体に許す
-- 実行ロールにはインラインのポリシーを付けられるので、main に push できる人は、Lambda を通して広い権限を持てる。使えるのを自分のリポジトリの main だけにしているのは、そのため
+- `template/github-oidc.yaml`: GitHub からのログインを受け付ける OIDC プロバイダ。アカウントに1つだけで、全ゲームで共有する
+- `template/github-deploy.yaml`: ゲームごとのロール。ゲームごとに1つデプロイする
 
-**1. 設定をデプロイする（1回だけ）**
+ゲームごとのロールは2つに分かれる。
 
-IAM を作るので、組織の SCP で止められることがある。そのときは、止められた操作をエラーから確かめる。
+| ロール | 使う人 | できること |
+| --- | --- | --- |
+| `<ゲーム>-github-deploy` | GitHub Actions（`<オーナー>/<ゲーム>` の main だけ） | `<ゲーム>-online` のスタックを、CloudFormation 用のロールを渡して CloudFormation に頼む。成果物を共有のバケットの `<ゲーム>-online/` の下に置く |
+| `<ゲーム>-cfn-deploy` | CloudFormation | Lambda・DynamoDB・ロググループ・実行ロール（名前が `<ゲーム>-online-*` のもの）と、API Gateway を作る |
+
+- 1つのゲームのワークフローが乗っ取られても、変えられるのはそのゲームのスタックだけ
+- API Gateway は API の ID が乱数で名前から絞れないので、CloudFormation 用のロールには API 全体を許している。ただし、このロールを使えるのは CloudFormation だけで、CloudFormation は自分のスタックのリソースしか変えない。GitHub 用のロールは API Gateway を直接触れない
+- 実行ロールにはインラインのポリシーを付けられるので、main に push できる人は、Lambda を通して広い権限を持てる。ロールを使えるのを自分のリポジトリの main だけにしているのは、そのため
+- 2つのロールの名前は、`<ゲーム>-online-*` の外にしてある（実行ロールを作る権限で、自分のポリシーを書き換えられないように）
+- IAM を作るので、組織の SCP で止められることがある。そのときは、止められた操作をエラーから確かめる
+
+**1. OIDC プロバイダを作る（アカウントに1回だけ）**
+
+アカウントにすでに `token.actions.githubusercontent.com` のプロバイダがあれば、作らない（`aws iam list-open-id-connect-providers` で確かめる）。
+
+```sh
+aws cloudformation deploy \
+  --template-file template/github-oidc.yaml \
+  --stack-name netplay-github-oidc \
+  --region ap-northeast-1 --profile <プロフィール>
+```
+
+**2. ゲームのロールを作る（ゲームを足すたび）**
 
 ```sh
 aws cloudformation deploy \
   --template-file template/github-deploy.yaml \
-  --stack-name netplay-github-deploy \
+  --stack-name <ゲーム>-github-deploy \
   --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides Repositories=mine-blocks \
+  --parameter-overrides GameName=<ゲーム> \
   --region ap-northeast-1 --profile <プロフィール>
 ```
 
-**2. ゲームを足す**
+**3. ゲームのリポジトリに Secret を登録する**
 
-`Repositories` には、使うリポジトリを全部並べる（足す分だけではない）。今の値は `describe-stacks` で見られる。
-
-```sh
-aws cloudformation describe-stacks --stack-name netplay-github-deploy \
-  --query 'Stacks[0].Parameters' --region ap-northeast-1 --profile <プロフィール>
-
-aws cloudformation deploy \
-  --template-file template/github-deploy.yaml \
-  --stack-name netplay-github-deploy \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides Repositories=mine-blocks,dominion \
-  --region ap-northeast-1 --profile <プロフィール>
-```
-
-**3. 各ゲームに Secret を登録する**
-
-ロールの ARN を、各ゲームのリポジトリの Secret `AWS_DEPLOY_ROLE_ARN` に入れる。
+GitHub 用のロールの ARN（出力の `RoleArn`）を、Secret `AWS_DEPLOY_ROLE_ARN` に入れる。名前はどのゲームでも同じ。
 
 ```sh
-ARN=$(aws cloudformation describe-stacks --stack-name netplay-github-deploy \
+ARN=$(aws cloudformation describe-stacks --stack-name <ゲーム>-github-deploy \
   --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" --output text \
   --region ap-northeast-1 --profile <プロフィール>)
 gh secret set AWS_DEPLOY_ROLE_ARN --repo 123yoshidandy/<ゲーム> --body "$ARN"
 ```
 
-ワークフローでは、`permissions: id-token: write` を付け、`aws-actions/configure-aws-credentials` の `role-to-assume` に `${{ secrets.AWS_DEPLOY_ROLE_ARN }}` を渡す。samconfig.toml は `confirm_changeset = true` なので、`sam deploy --no-confirm-changeset --no-fail-on-empty-changeset` で確認を飛ばす。権限が足りずに失敗したら、エラーに出た操作をこのテンプレートに足す。
+**4. ワークフロー**
+
+`permissions: id-token: write` を付け、`aws-actions/configure-aws-credentials` の `role-to-assume` に `${{ secrets.AWS_DEPLOY_ROLE_ARN }}` を渡す。`sam deploy` には次を付ける。
+
+- `--role-arn`: CloudFormation 用のロール（`<ゲーム>-cfn-deploy`）。付けないと、変更セットを作れない
+- `--s3-prefix <ゲーム>-online`: 成果物を置く場所。GitHub 用のロールは、ここにしか置けない
+- `--no-confirm-changeset --no-fail-on-empty-changeset`: samconfig.toml は `confirm_changeset = true` なので、確認を飛ばす
+
+```sh
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+sam deploy --role-arn "arn:aws:iam::$ACCOUNT:role/<ゲーム>-cfn-deploy" --s3-prefix <ゲーム>-online \
+  --no-confirm-changeset --no-fail-on-empty-changeset
+```
+
+一度 `--role-arn` を付けてデプロイすると、そのスタックは以後も CloudFormation 用のロールを使う。手元から `npm run deploy:server` でデプロイしても同じロールが使われるので、権限が足りなければ手元のデプロイも失敗する。権限が足りずに失敗したら、エラーに出た操作を `github-deploy.yaml` に足して、ロールのスタックをデプロイし直す。
 
 ## 開発
 

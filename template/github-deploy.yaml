@@ -1,56 +1,56 @@
 AWSTemplateFormatVersion: '2010-09-09'
-# GitHub Actions から各ゲームのサーバー（<ゲーム>-online のスタック）をデプロイするための設定。アカウントに1回だけデプロイする（同期はしない）
-# 手順は README の「GitHub Actions での自動デプロイ」を参照
-Description: GitHub Actions OIDC provider and deploy role for netplay-kit games (<game>-online stacks)
+# GitHub Actions から1つのゲームのサーバー（<ゲーム>-online のスタック）をデプロイするためのロール。ゲームごとに1つデプロイする（同期はしない）
+# 先に github-oidc.yaml（アカウントに1つ）を作っておく。手順は README の「GitHub Actions での自動デプロイ」を参照
+#
+# ロールは2つに分ける
+# - <ゲーム>-github-deploy：GitHub Actions が使う。自分のスタックを CloudFormation に頼むことと、成果物のアップロードだけができる
+# - <ゲーム>-cfn-deploy：CloudFormation が使う（sam deploy --role-arn）。Lambda・API Gateway などを作る
+# API Gateway は API の ID が乱数で名前から絞れないが、触れるのは CloudFormation だけで、CloudFormation は自分のスタックのリソースしか変えない
+# どちらのロールも <ゲーム>-online-* の外の名前にする（実行ロールを作る権限で、自分のポリシーを書き換えられないように）
+Description: GitHub Actions deploy roles for one netplay-kit game (<game>-online stack)
 
 Parameters:
-  Repositories:
-    Type: CommaDelimitedList
-    Default: mine-blocks
-    Description: Repositories of 123yoshidandy allowed to deploy from the main branch (comma separated, e.g. mine-blocks,dominion)
+  GameName:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9-]*$'
+    Description: Game repository name, also the prefix of its stack (e.g. mine-blocks deploys mine-blocks-online)
+  GitHubOwner:
+    Type: String
+    Default: 123yoshidandy
+    Description: Owner of the game repository
 
 Resources:
-  GitHubOidcProvider:
-    Type: AWS::IAM::OIDCProvider
-    Properties:
-      Url: https://token.actions.githubusercontent.com
-      ClientIdList:
-        - sts.amazonaws.com
-      ThumbprintList:
-        - 6938fd4d98bab03faadb97b34396831e3780aea1
-        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
-
-  DeployRole:
+  # GitHub Actions が使うロール。使えるのは <オーナー>/<ゲーム> の main ブランチだけ
+  GitHubRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: netplay-github-deploy
-      Description: Deploys <game>-online stacks from GitHub Actions (main branch only)
+      RoleName: !Sub ${GameName}-github-deploy
+      Description: !Sub Deploys ${GameName}-online from GitHub Actions (main branch only)
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !Ref GitHubOidcProvider
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                # 一覧の各リポジトリを repo:123yoshidandy/<リポジトリ>:ref:refs/heads/main にする
-                # （Join の区切り文字には関数が使えないので、オーナー名をここに直接書く）
-                token.actions.githubusercontent.com:sub: !Split
-                  - ','
-                  - !Sub
-                    - repo:123yoshidandy/${Joined}:ref:refs/heads/main
-                    - Joined: !Join [':ref:refs/heads/main,repo:123yoshidandy/', !Ref Repositories]
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GameName}:ref:refs/heads/main
       Policies:
         - PolicyName: sam-deploy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # スタック（<ゲーム>-online）と変更セット。SAM の変換（Transform）も変更セットの作成に要る
+              # 変更セットは、CloudFormation 用のロールを渡したときだけ作れる
+              - Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${GameName}-online/*
+                Condition:
+                  StringEquals:
+                    cloudformation:RoleArn: !GetAtt CloudFormationRole.Arn
               - Effect: Allow
                 Action:
-                  - cloudformation:CreateChangeSet
                   - cloudformation:DescribeChangeSet
                   - cloudformation:ExecuteChangeSet
                   - cloudformation:DeleteChangeSet
@@ -61,9 +61,11 @@ Resources:
                   - cloudformation:ListStackResources
                   - cloudformation:GetTemplate
                   - cloudformation:GetTemplateSummary
-                Resource:
-                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*-online/*
-                  - !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${GameName}-online/*
+              # SAM の変換（Transform）は、変更セットを作る人の権限で使う
+              - Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
               # sam deploy が、共有のバケット（resolve_s3）のスタックを読む
               - Effect: Allow
                 Action: cloudformation:DescribeStacks
@@ -73,31 +75,64 @@ Resources:
                   - cloudformation:ValidateTemplate
                   - cloudformation:GetTemplateSummary
                 Resource: '*'
-              # SAM の共有バケットへの成果物のアップロード（CloudFormation もこの権限でテンプレートを読む）
+              # 成果物は、共有のバケットの <ゲーム>-online/ の下にだけ置く（sam deploy --s3-prefix）
               - Effect: Allow
                 Action:
                   - s3:PutObject
                   - s3:GetObject
+                Resource: !Sub arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/${GameName}-online/*
+              - Effect: Allow
+                Action:
                   - s3:ListBucket
                   - s3:GetBucketLocation
-                Resource:
-                  - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*
-                  - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/*
+                Resource: arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+
+  # CloudFormation が <ゲーム>-online のスタックを作るときに使うロール
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${GameName}-cfn-deploy
+      Description: !Sub Used by CloudFormation to deploy ${GameName}-online
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: game-stack
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Lambda のコードとテンプレートを読む
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/${GameName}-online/*
               - Effect: Allow
                 Action: lambda:*
-                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*-online-*
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${GameName}-online-*
               - Effect: Allow
                 Action: dynamodb:*
-                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-online-*
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${GameName}-online-*
               - Effect: Allow
                 Action: logs:*
                 Resource:
-                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-online-*
-                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-online-*:*
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${GameName}-online-*
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${GameName}-online-*:*
               - Effect: Allow
                 Action: logs:DescribeLogGroups
                 Resource: '*'
-              # WebSocket の API。ID は乱数で名前から絞れないので、API Gateway の API 全体に許す
+              # WebSocket の API。ID は乱数で名前から絞れないので、API 全体に許す（このロールを使えるのは CloudFormation だけ）
               - Effect: Allow
                 Action:
                   - apigateway:GET
@@ -126,24 +161,27 @@ Resources:
                   - iam:ListRolePolicies
                   - iam:ListAttachedRolePolicies
                   - iam:ListInstanceProfilesForRole
-                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/*-online-*
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/${GameName}-online-*
               # 付けられる管理ポリシーは、Lambda の基本の実行ロールだけにする
               - Effect: Allow
                 Action:
                   - iam:AttachRolePolicy
                   - iam:DetachRolePolicy
-                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/*-online-*
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/${GameName}-online-*
                 Condition:
                   ArnEquals:
                     iam:PolicyARN: arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
               - Effect: Allow
                 Action: iam:PassRole
-                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/*-online-*
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/${GameName}-online-*
                 Condition:
                   StringEquals:
                     iam:PassedToService: lambda.amazonaws.com
 
 Outputs:
   RoleArn:
-    Description: Register this as the AWS_DEPLOY_ROLE_ARN secret of each game repository
-    Value: !GetAtt DeployRole.Arn
+    Description: Register this as the AWS_DEPLOY_ROLE_ARN secret of the game repository
+    Value: !GetAtt GitHubRole.Arn
+  CloudFormationRoleArn:
+    Description: Pass this to sam deploy --role-arn
+    Value: !GetAtt CloudFormationRole.Arn
