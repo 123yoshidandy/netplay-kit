@@ -208,12 +208,40 @@ net.start(); net.ready(); net.backToLobby(); net.setSettings({ winsNeeded: 2 });
 net.serverNow();                     // サーバーの今の時刻（toLocalTime(serverTime) で端末の時刻に直す）
 NetplayClient.isRoomCode(code);     // 入力された部屋番号の形を確かめる（桁数は NetplayClient.ROOM_CODE_LENGTH）
 net.inviteUrl(); net.setRoomUrl(code); NetplayClient.roomCodeFromUrl();  // 招待URLには ?server= を残す（keepParams で変えられる）
+NetplayClient.inviteRoomCode();      // 招待URLの部屋番号（数字4桁のときだけ。なければ null）
+await net.enterRoom(code, name);     // joinRoom と同じだが、参加できたら resolve、断られたら reject（error.code）
+await net.joinFromInvite(name);      // 招待URLの部屋に enterRoom で入る（招待URLでなければ null）
 ```
 
 - 接続中は5分ごとに ping を送る（API Gateway の WebSocket は、10分間何も送らないと切れる）。切れたら（2時間で必ず切れる）同じ席につなぎ直す。スマホのスリープから戻ったときは、待たずにつなぎ直す
 - 時計のずれは、ping の往復時間の半分を引いて、一番速かったときの値で直す
 - 保存した部屋に戻れなかったら（部屋が消えた・退出済み）、保存した参加情報を消す
 - 画面の描画は持たない。dominion の OnlineGameController のような「ローカル対戦と同じ形」の包みは、各ゲームの側で NetplayClient を使って作る
+- `createRoom`・`joinRoom`・`resume` は送るだけで、つながらなければ例外を投げる。結果は `joined`・`lobby`・`error` のイベントで届く
+- `enterRoom` の reject の `error.code` は、サーバーのコード（`room_not_found`・`room_full`・`already_started` など。`error.fromServer` が true）か、`not_connected`（つながらない）・`disconnected`（返事の前に切れた）・`timeout`（10秒返事がない）。`error` のイベントもこれまでどおり届くので、知らせを二重に出さないようにする
+- `leave()` は、URL の部屋番号（`?room=`）も外す（再読み込みで、また参加しようとしないように）
+
+### 招待URLで開いたとき
+
+各ゲームは、次の流れに合わせて画面を作る（lucky-numbers の作りを元にした）。
+
+1. `NetplayClient.inviteRoomCode()` があり、名前がわかれば、画面を挟まずに `net.joinFromInvite(name)` で入る。名前は `net.session?.name` か、ゲームの側で保存している名前を使う（「あなた」のような既定の名前は、わからないものとして扱ってよい）。同じ部屋に入ったことがあれば、保存したトークンで同じ席に戻る（再読み込みしても人数は増えない）
+2. 名前がわからなければ、「部屋 1234 に参加」の見出しで、名前の欄と「参加する」「戻る」だけを出す（部屋を作る・部屋番号の欄は隠す。名前の欄にフォーカスし、Enter でも参加する）
+3. 入れなければ（reject）、理由を知らせて、いつものオンラインの入口に戻す。サーバーに断られたときは、`joinFromInvite` が URL から部屋番号を外している。通信の失敗（`not_connected` など）では外さないので、もう一度試せる
+4. 「戻る」では `net.setRoomUrl(null)` で URL から部屋番号を外す。「部屋を出る」は `leave()` が外す
+
+```js
+const roomCode = NetplayClient.inviteRoomCode();
+if (roomCode) {
+    const name = net.session?.name ?? savedName();
+    if (!name) return showInviteScreen(roomCode);   // 2.
+    try {
+        await net.joinFromInvite(name);              // 1.
+    } catch (error) {
+        showOnlineMenu(error.message);               // 3.
+    }
+}
+```
 
 ## 同期
 

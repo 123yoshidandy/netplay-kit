@@ -97,6 +97,54 @@ describe('NetplayClient（手元のテスト用サーバーにつなぐ）', () 
         expect(a.session).toBeNull();
         a.close();
     });
+
+    it('enterRoom は、参加できたら resolve し、断られたらコード付きで reject する', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.e' });
+        const b = new NetplayClient({ serverUrl: url, storageKey: 'test.f' });
+        await a.createRoom('あお');
+        await waitFor(() => a.lobby);
+
+        const joined = await b.enterRoom(a.lobby.roomCode, 'みどり');
+        expect(joined.seat).toBe(1);
+
+        const c = new NetplayClient({ serverUrl: url, storageKey: 'test.g' });
+        const error = await c.enterRoom('0000', 'きいろ').catch(e => e);
+        expect([error.code, error.fromServer]).toEqual(['room_not_found', true]);
+
+        const offline = new NetplayClient({ serverUrl: 'ws://localhost:1', storageKey: 'test.h' });
+        const failed = await offline.enterRoom('0000', 'きいろ').catch(e => e);
+        expect([failed.code, failed.fromServer]).toEqual(['not_connected', false]);
+        [a, b, c, offline].forEach(client => client.close());
+    });
+
+    it('招待URLで開いたら joinFromInvite で入り、断られたときと退出したときは URL から部屋番号を外す', async () => {
+        const saved = { location: globalThis.location, history: globalThis.history };
+        const open = (href) => { globalThis.location = new URL(href); };
+        globalThis.history = { state: null, replaceState: (state, title, next) => open(String(next)) };
+        try {
+            const host = new NetplayClient({ serverUrl: url, storageKey: 'test.i' });
+            await host.createRoom('あお');
+            await waitFor(() => host.lobby);
+            const guest = new NetplayClient({ serverUrl: url, storageKey: 'test.j' });
+
+            open('http://localhost/?server=x');
+            expect(await guest.joinFromInvite('みどり')).toBeNull();
+
+            open('http://localhost/?server=x&room=0000');
+            const error = await guest.joinFromInvite('みどり').catch(e => e);
+            expect(error.code).toBe('room_not_found');
+            expect(location.search).toBe('?server=x');
+
+            open(`http://localhost/?server=x&room=${host.lobby.roomCode}`);
+            expect((await guest.joinFromInvite('みどり')).roomCode).toBe(host.lobby.roomCode);
+            guest.leave();
+            expect(location.search).toBe('?server=x');
+            host.close();
+        } finally {
+            globalThis.location = saved.location;
+            globalThis.history = saved.history;
+        }
+    });
 });
 
 describe('NetplayClient の CPU の手の見せ方', () => {
@@ -156,6 +204,20 @@ describe('NetplayClient の届く順番', () => {
 });
 
 describe('部屋番号の形', () => {
+    it('招待URLの部屋番号は、数字4桁のときだけ返す', () => {
+        const saved = globalThis.location;
+        try {
+            globalThis.location = new URL('http://localhost/?room=%201234%20');
+            expect(NetplayClient.inviteRoomCode()).toBe('1234');
+            globalThis.location = new URL('http://localhost/?room=12a4');
+            expect(NetplayClient.inviteRoomCode()).toBeNull();
+            globalThis.location = new URL('http://localhost/');
+            expect(NetplayClient.inviteRoomCode()).toBeNull();
+        } finally {
+            globalThis.location = saved;
+        }
+    });
+
     it('数字4桁だけを部屋番号として受け付け、前後の空白は無視する', () => {
         expect(NetplayClient.ROOM_CODE_LENGTH).toBe(4);
         expect(NetplayClient.isRoomCode('0123')).toBe(true);

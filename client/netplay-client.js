@@ -17,6 +17,7 @@
     const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000; // API Gateway は10分間何も送らないと切るので、その前に送る
     const DEFAULT_RECONNECT_DELAY_MS = 2000;
     const LEAVE_TIMEOUT_MS = 1500;                   // 退出の返事を待つ時間（届かなくても片付ける）
+    const JOIN_TIMEOUT_MS = 10000;                   // enterRoom が参加の返事を待つ時間
 
     class NetplayClient {
         // serverUrl: 接続先（NetplayClient.resolveServerUrl で決めるとよい）
@@ -192,6 +193,49 @@
             return this.request({ action: 'join', roomCode: code, name, token });
         }
 
+        // joinRoom と同じだが、参加できたら（joined）resolve し、断られたら reject する
+        // reject の Error には code がある（サーバーのコード、または 'disconnected'・'timeout'・'not_connected'）
+        // fromServer はサーバーに断られたとき true。'error' のイベントも、これまでどおり届く
+        async enterRoom(roomCode, name, { timeoutMs = JOIN_TIMEOUT_MS } = {}) {
+            let settle;
+            const result = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+            result.catch(() => {}); // 呼んだ側が受け取る前に断られても、未処理の reject にしない
+            const roomError = (message, code, fromServer = false) => Object.assign(new Error(message), { code, fromServer });
+            let settled = false;
+            const done = (error, message) => {
+                if (settled) return;
+                settled = true;
+                offs.forEach(off => off());
+                clearTimeout(timer);
+                if (error) settle.reject(error); else settle.resolve(message);
+            };
+            const offs = [
+                this.on('joined', message => done(null, message)),
+                this.on('error', message => done(roomError(message.message, message.code, true))),
+                this.on('connection', open => { if (!open) done(roomError('サーバーとの接続が切れました', 'disconnected')); })
+            ];
+            const timer = setTimeout(() => done(roomError('サーバーから返事がありません', 'timeout')), timeoutMs);
+            try {
+                if (!await this.joinRoom(roomCode, name)) done(roomError('サーバーに接続できませんでした', 'not_connected'));
+            } catch (error) {
+                done(Object.assign(error, { code: 'not_connected', fromServer: false }));
+            }
+            return result;
+        }
+
+        // 招待URL（?room=部屋番号）で開いていれば、その部屋に入る。招待URLでなければ null を返す
+        // サーバーに断られたら（部屋がない・満員など）、URL から部屋番号を外してから reject する（再読み込みで、また参加しようとしないように）
+        async joinFromInvite(name, options) {
+            const roomCode = NetplayClient.inviteRoomCode(this.roomParam);
+            if (!roomCode) return null;
+            try {
+                return await this.enterRoom(roomCode, name, options);
+            } catch (error) {
+                if (error.fromServer) this.setRoomUrl(null);
+                throw error;
+            }
+        }
+
         // 保存した参加情報で、前の席に戻る
         async resume() {
             if (!this.session) return false;
@@ -199,11 +243,12 @@
             return this.request({ action: 'join', roomCode: this.session.roomCode, token: this.session.token });
         }
 
-        // 部屋を出る（サーバーの返事を少し待って、接続を閉じる。参加情報も消す）
+        // 部屋を出る（サーバーの返事を少し待って、接続を閉じる。参加情報と、URL の部屋番号も消す）
         leave() {
             const sent = this.request({ action: 'leave' });
             this.isLeaving = true;
             this.clearSession();
+            this.setRoomUrl(null);
             if (!sent) {
                 this.close();
                 return;
@@ -384,9 +429,17 @@
             return new URLSearchParams(location.search).get(roomParam);
         }
 
+        // 招待URLで開いたときの部屋番号。部屋番号の形（数字4桁）でなければ null
+        static inviteRoomCode(roomParam = 'room') {
+            const roomCode = NetplayClient.roomCodeFromUrl(roomParam)?.trim();
+            return NetplayClient.isRoomCode(roomCode) ? roomCode : null;
+        }
+
         // 今の URL に部屋番号を入れる（再読み込みしても部屋に戻れる）。null で外す
         setRoomUrl(roomCode) {
+            if (typeof location === 'undefined' || typeof history === 'undefined') return;
             const url = new URL(location.href);
+            if (!roomCode && !url.searchParams.has(this.roomParam)) return;
             if (roomCode) {
                 url.searchParams.set(this.roomParam, roomCode);
             } else {
