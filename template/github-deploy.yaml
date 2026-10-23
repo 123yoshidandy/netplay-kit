@@ -36,7 +36,12 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GameName}:ref:refs/heads/main
+              # sub は、名前の形（repo:オーナー/リポジトリ:…）か、ID の形（repo:オーナー@ID/リポジトリ@ID:…）で届く
+              # ID の形は、新しく作ったリポジトリの既定（use_immutable_subject）。ID は決め打ちせず、どちらの形も受け付ける
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOwner}/${GameName}:ref:refs/heads/main
+                  - !Sub repo:${GitHubOwner}@*/${GameName}@*:ref:refs/heads/main
       Policies:
         - PolicyName: sam-deploy
           PolicyDocument:

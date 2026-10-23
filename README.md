@@ -314,6 +314,7 @@ node scripts/sync.mjs check ~/MyProjects/mine-blocks
 - API Gateway は API の ID が乱数で名前から絞れないので、CloudFormation 用のロールには API 全体を許している。ただし、このロールを使えるのは CloudFormation だけで、CloudFormation は自分のスタックのリソースしか変えない。GitHub 用のロールは API Gateway を直接触れない
 - 実行ロールにはインラインのポリシーを付けられるので、main に push できる人は、Lambda を通して広い権限を持てる。ロールを使えるのを自分のリポジトリの main だけにしているのは、そのため
 - 2つのロールの名前は、`<ゲーム>-online-*` の外にしてある（実行ロールを作る権限で、自分のポリシーを書き換えられないように）
+- GitHub のトークンの sub は、名前の形（`repo:オーナー/リポジトリ:…`）か、ID の形（`repo:オーナー@ID/リポジトリ@ID:…`）で届く。新しく作ったリポジトリ（katan・pokemon-card-game）は ID の形が既定なので、どちらも受け付ける。ID は決め打ちしないので、守りの強さは名前の形と同じ
 - IAM を作るので、組織の SCP で止められることがある。そのときは、止められた操作をエラーから確かめる
 
 **1. OIDC プロバイダを作る（アカウントに1回だけ）**
