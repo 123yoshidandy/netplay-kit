@@ -25,6 +25,7 @@
   - `web/index.html` / `e2e.mjs`: 最小の画面と、ヘッドレス Chrome での通し試験の例
 - `tools/chrome.mjs`: 通し試験の道具（ヘッドレス Chrome を DevTools Protocol で操作する。コピーはしない）
 - `template/template.yaml`: AWS SAM のテンプレートの見本（同期はしない）
+- `template/github-deploy.yaml`: GitHub Actions から自動デプロイするための、アカウントに1つの設定（同期はしない）
 - `scripts/sync.mjs`: 各ゲームへの同期と確認
 - `test/`: テスト（Vitest）
 
@@ -264,6 +265,57 @@ node scripts/sync.mjs check ~/MyProjects/mine-blocks
 
 - 料金の通知（AWS Budgets）は、組織が管理するアカウント全体の通知（実績・予測が 20 ドルごとに知らせる）に任せる。ゲームのスタックには入れない
 - ping も受け付け上限に数える（1人あたり5分に1回なので、ほとんど増えない）
+
+### GitHub Actions での自動デプロイ
+
+`template/github-deploy.yaml` は、各ゲームの main への push を起点に、GitHub Actions からサーバー（`<ゲーム>-online` のスタック）をデプロイするための設定。アカウントに1回だけデプロイする（同期はしない）。
+
+- GitHub の OIDC プロバイダと、デプロイ用のロール `netplay-github-deploy` を作る
+- ロールを使えるのは、引数 `Repositories` に並べた 123yoshidandy のリポジトリの main ブランチだけ
+- 権限は sam deploy に要る範囲に絞る。CloudFormation のスタックは `*-online`、Lambda・DynamoDB・ロググループ・Lambda の実行ロールは名前が `*-online-*` のものに限る。API Gateway は ID から名前がわからないので、API 全体に許す
+- 実行ロールにはインラインのポリシーを付けられるので、main に push できる人は、Lambda を通して広い権限を持てる。使えるのを自分のリポジトリの main だけにしているのは、そのため
+
+**1. 設定をデプロイする（1回だけ）**
+
+IAM を作るので、組織の SCP で止められることがある。そのときは、止められた操作をエラーから確かめる。
+
+```sh
+aws cloudformation deploy \
+  --template-file template/github-deploy.yaml \
+  --stack-name netplay-github-deploy \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides Repositories=mine-blocks \
+  --region ap-northeast-1 --profile <プロフィール>
+```
+
+**2. ゲームを足す**
+
+`Repositories` には、使うリポジトリを全部並べる（足す分だけではない）。今の値は `describe-stacks` で見られる。
+
+```sh
+aws cloudformation describe-stacks --stack-name netplay-github-deploy \
+  --query 'Stacks[0].Parameters' --region ap-northeast-1 --profile <プロフィール>
+
+aws cloudformation deploy \
+  --template-file template/github-deploy.yaml \
+  --stack-name netplay-github-deploy \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides Repositories=mine-blocks,dominion \
+  --region ap-northeast-1 --profile <プロフィール>
+```
+
+**3. 各ゲームに Secret を登録する**
+
+ロールの ARN を、各ゲームのリポジトリの Secret `AWS_DEPLOY_ROLE_ARN` に入れる。
+
+```sh
+ARN=$(aws cloudformation describe-stacks --stack-name netplay-github-deploy \
+  --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" --output text \
+  --region ap-northeast-1 --profile <プロフィール>)
+gh secret set AWS_DEPLOY_ROLE_ARN --repo 123yoshidandy/<ゲーム> --body "$ARN"
+```
+
+ワークフローでは、`permissions: id-token: write` を付け、`aws-actions/configure-aws-credentials` の `role-to-assume` に `${{ secrets.AWS_DEPLOY_ROLE_ARN }}` を渡す。samconfig.toml は `confirm_changeset = true` なので、`sam deploy --no-confirm-changeset --no-fail-on-empty-changeset` で確認を飛ばす。権限が足りずに失敗したら、エラーに出た操作をこのテンプレートに足す。
 
 ## 開発
 

@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+# GitHub Actions から各ゲームのサーバー（<ゲーム>-online のスタック）をデプロイするための設定。アカウントに1回だけデプロイする（同期はしない）
+# 手順は README の「GitHub Actions での自動デプロイ」を参照
+Description: GitHub Actions OIDC provider and deploy role for netplay-kit games (<game>-online stacks)
+
+Parameters:
+  Repositories:
+    Type: CommaDelimitedList
+    Default: mine-blocks
+    Description: Repositories of 123yoshidandy allowed to deploy from the main branch (comma separated, e.g. mine-blocks,dominion)
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: netplay-github-deploy
+      Description: Deploys <game>-online stacks from GitHub Actions (main branch only)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # 一覧の各リポジトリを repo:123yoshidandy/<リポジトリ>:ref:refs/heads/main にする
+                # （Join の区切り文字には関数が使えないので、オーナー名をここに直接書く）
+                token.actions.githubusercontent.com:sub: !Split
+                  - ','
+                  - !Sub
+                    - repo:123yoshidandy/${Joined}:ref:refs/heads/main
+                    - Joined: !Join [':ref:refs/heads/main,repo:123yoshidandy/', !Ref Repositories]
+      Policies:
+        - PolicyName: sam-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # スタック（<ゲーム>-online）と変更セット。SAM の変換（Transform）も変更セットの作成に要る
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:ListStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                Resource:
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*-online/*
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+              # sam deploy が、共有のバケット（resolve_s3）のスタックを読む
+              - Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                Resource: '*'
+              # SAM の共有バケットへの成果物のアップロード（CloudFormation もこの権限でテンプレートを読む）
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*
+                  - arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/*
+              - Effect: Allow
+                Action: lambda:*
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*-online-*
+              - Effect: Allow
+                Action: dynamodb:*
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-online-*
+              - Effect: Allow
+                Action: logs:*
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-online-*
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-online-*:*
+              - Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: '*'
+              # WebSocket の API。ID は乱数で名前から絞れないので、API Gateway の API 全体に許す
+              - Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource:
+                  - !Sub arn:aws:apigateway:${AWS::Region}::/apis
+                  - !Sub arn:aws:apigateway:${AWS::Region}::/apis/*
+                  - !Sub arn:aws:apigateway:${AWS::Region}::/tags/*
+              # CAPABILITY_IAM で作る Lambda の実行ロール（<ゲーム>-online-GameFunctionRole-…）
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/*-online-*
+              # 付けられる管理ポリシーは、Lambda の基本の実行ロールだけにする
+              - Effect: Allow
+                Action:
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/*-online-*
+                Condition:
+                  ArnEquals:
+                    iam:PolicyARN: arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/*-online-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+
+Outputs:
+  RoleArn:
+    Description: Register this as the AWS_DEPLOY_ROLE_ARN secret of each game repository
+    Value: !GetAtt DeployRole.Arn
