@@ -164,8 +164,8 @@ export class RoomService {
             case 'create': return this.createRoom(connectionId, message);
             case 'join': return this.joinRoom(connectionId, message);
             case 'ping':
-                // 期限を使わないゲームは、部屋を読まずに返す（接続を保つための ping で読み込みを増やさない）
-                if (!this.game.deadline) return [this.pong(connectionId, message)];
+                // 期限を使わないゲームで、端末の版が付いていなければ、部屋を読まずに返す（接続を保つための ping で読み込みを増やさない）
+                if (!this.game.deadline && !Number.isFinite(message.version)) return [this.pong(connectionId, message)];
                 break;
         }
 
@@ -177,7 +177,7 @@ export class RoomService {
 
         let outbox;
         switch (message.action) {
-            case 'ping': outbox = [this.pong(connectionId, message)]; break;
+            case 'ping': outbox = [this.pong(connectionId, message), ...this.resyncMessages(room, seat, message.version)]; break;
             case 'leave': return this.withVersion(room, [...deadline.outbox, ...await this.leaveRoom(room, seat, connectionId, lobbyBefore)]);
             case 'start': outbox = this.startMatch(room, seat); break;
             case 'ready': outbox = this.setReady(room, seat, message.ready !== false); break;
@@ -591,6 +591,18 @@ export class RoomService {
             .map((player, seat) => ({ player, seat }))
             .filter(({ player }) => player.connectionId)
             .map(({ player, seat }) => ({ connectionId: player.connectionId, message: createMessage(player, seat) }));
+    }
+
+    // 端末が最後に受け取った版（ping の version）より部屋が新しければ、取りこぼしたものの代わりに今の lobby と state を送り直す
+    // （送信が API Gateway に断られて届かなかったとき、どちらの端末も相手を待ったまま止まらないように。形は再接続と同じ）
+    resyncMessages(room, seat, version) {
+        if (!Number.isFinite(version) || room.version <= version) return [];
+        const messages = [{ connectionId: room.players[seat].connectionId, message: { ...this.lobbyState(room), seat } }];
+        if (room.status !== 'lobby' && room.game) {
+            const game = this.restoreGame(room);
+            messages.push(this.stateMessage(room, game, seat, this.game.joinMark ? this.game.joinMark(game) : null));
+        }
+        return messages;
     }
 
     pong(connectionId, { clientTime }) {

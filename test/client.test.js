@@ -70,6 +70,28 @@ describe('NetplayClient（手元のテスト用サーバーにつなぐ）', () 
         a.close();
     });
 
+    it('lobby・state がしばらく届かなければ、版を添えた ping で取りこぼした分を取り直す', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.sync', syncIdleMs: 50 });
+        const pings = [];
+        const request = a.request.bind(a);
+        a.request = (message) => {
+            if (message.action === 'ping') pings.push(message);
+            return request(message);
+        };
+        const lobbies = record(a, ['lobby']);
+        await a.createRoom('あお');
+        await waitFor(() => a.lobby);
+        const version = a.lastVersion;
+        await waitFor(() => pings.some(ping => ping.version === version));
+        await new Promise(resolve => setTimeout(resolve, 150));
+        expect(lobbies).toHaveLength(1);   // 版が同じなら送り直さない
+
+        a.lastVersion = version - 1;       // 最後の lobby を取りこぼしたことにする
+        await waitFor(() => lobbies.length === 2);
+        expect(lobbies[1].message.version).toBe(version);
+        a.close();
+    });
+
     it('接続が切れたら、同じ席に自動でつなぎ直す', async () => {
         const a = new NetplayClient({ serverUrl: url, storageKey: 'test.c', reconnectDelayMs: 50 });
         const connection = [];

@@ -157,7 +157,7 @@ export default {
 | `create` `{ name }` | 部屋を作る |
 | `join` `{ roomCode, name, token? }` | 部屋に入る（token が参加者のものなら、その席に再接続する） |
 | `leave` | 部屋を出る |
-| `ping` `{ clientTime }` | 接続の生存確認（期限のあるゲームでは、期限も確かめる） |
+| `ping` `{ clientTime, version? }` | 接続の生存確認（期限のあるゲームでは、期限も確かめる）。`version`（端末が最後に受け取った部屋の版）より部屋が新しければ、今の `lobby` と `state` を送り直す |
 | `start` / `ready` `{ ready }` / `backToLobby` | 開始・再戦の準備・ロビーに戻る |
 | `setSettings` `{ settings }` / `addCpu` / `removeCpu` `{ seat }` | ロビーの操作（ホストだけ） |
 | `stamp` `{ stamp }` | スタンプを全員に送る（保存しない） |
@@ -185,6 +185,7 @@ export default {
   - `lobby` と `state` には、部屋の版（`version`。部屋を保存するたびに増える）が付く。NetplayClient は、前に受け取った `lobby`・`state` より古い版のものを、知らせずに捨てる
   - 同じ版のもの（CPU の手のように1回の保存で送ったビューや、断られた操作の返事）は捨てない
   - 部屋に入り直したら（`joined`）、版を数え直す
+- 送信が API Gateway に断られて、`lobby`・`state` が届かないことがある（pokemon-card-game で、相手の番から自分の番に変わる版88が届かず、両方が相手を待ったまま止まった）。NetplayClient は、部屋にいて `lobby`・`state` が10秒届かなければ、最後に受け取った版を添えて `ping` を送る。部屋のほうが新しければ、再接続と同じ形の `lobby` → `state` が届く
 
 ### 部屋の状態の players
 
@@ -221,6 +222,7 @@ await net.joinFromInvite(name);      // 招待URLの部屋に enterRoom で入�
 
 - 接続中は5分ごとに ping を送る（API Gateway の WebSocket は、10分間何も送らないと切れる）。切れたら（2時間で必ず切れる）同じ席につなぎ直す。スマホのスリープから戻ったときは、待たずにつなぎ直す
 - 時計のずれは、ping の往復時間の半分を引いて、一番速かったときの値で直す
+- 部屋にいて `lobby`・`state` が `syncIdleMs`（既定10秒、0 で止める）届かなければ、版を添えた ping で取りこぼしを確かめる。ゲームの側は、送り直された `lobby`・`state` をふだんどおり描けばよい
 - 保存した部屋に戻れなかったら（部屋が消えた・退出済み）、保存した参加情報を消す
 - 画面の描画は持たない。dominion の OnlineGameController のような「ローカル対戦と同じ形」の包みは、各ゲームの側で NetplayClient を使って作る
 - `createRoom`・`joinRoom`・`resume` は送るだけで、つながらなければ例外を投げる。結果は `joined`・`lobby`・`error` のイベントで届く
@@ -298,10 +300,11 @@ node scripts/sync.mjs check ~/MyProjects/mine-blocks
 | 中継（panel-de-pon。1人あたり毎秒5回ほど送る） | 50 | 100 |
 
 - 料金の通知（AWS Budgets）は、組織が管理するアカウント全体の通知（実績・予測が 20 ドルごとに知らせる）に任せる。ゲームのスタックには入れない
-- ping も受け付け上限に数える（1人あたり5分に1回なので、ほとんど増えない）
+- ping も受け付け上限に数える（1人あたり5分に1回と、部屋で10秒何も届かなかったときに1回なので、ほとんど増えない。版を添えた ping は部屋を1回読む）
 - 部屋と接続は、DynamoDB から強い整合性（ConsistentRead）で読む。既定の結果整合性では、保存した直後に1つ前の部屋が返ることがあり、古い部屋で操作を判定してしまう（pokemon-card-game で、版31を送ったあとの操作の返事が版30になった）
 - 端末への送信が API Gateway に断られたら（429 `TooManyRequestsException`）、0.1・0.3・0.9秒待って3回まで送り直す（pokemon-card-game の速い通しの試験で、対戦が始まる `lobby` が届かず止まった）
 - それでも送れなかったら、Lambda のログに `{"event":"send_failed", connectionId, type, version, error, status, attempts}` を1行残す。返事が届かないと言われたら、CloudWatch Logs で `send_failed` を探す（`GoneException` は切れた接続で、ふだんから出る）
+- 送り直しても届かなかった `lobby`・`state` は、端末が10秒後に版を添えた ping で取り直す（429 の原因はわかっていない。受け付け上限には数えられず、ping を毎秒9件送り続けても断られなかった）
 
 ### GitHub Actions での自動デプロイ
 

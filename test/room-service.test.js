@@ -238,6 +238,20 @@ describe('接続の生存確認と制限', () => {
         expect(server.store.reads).toBe(reads);
     });
 
+    it('版を添えた ping には、部屋のほうが新しければ今の lobby と state を送り直す', async () => {
+        const server = createTestServer(raceGame);
+        const [a] = await server.createRoom(['A', 'B']);
+        await a.send('start');
+        const latest = Math.max(...a.messages.filter(m => ['lobby', 'state'].includes(m.type)).map(m => m.version));
+        a.clear();
+        await a.send('ping', { clientTime: 1, version: latest });
+        expect(a.messages.map(m => m.type)).toEqual(['pong']);
+        await a.send('ping', { clientTime: 2, version: latest - 1 });
+        expect(a.messages.map(m => m.type)).toEqual(['pong', 'pong', 'lobby', 'state']);
+        expect(a.last('lobby')).toMatchObject({ status: 'playing', seat: 0, version: latest });
+        expect(a.last('state').version).toBe(latest);
+    });
+
     it('大きすぎる・読めないメッセージは黙って捨てる', async () => {
         const server = createTestServer(raceGame);
         const [a] = await server.createRoom(['A']);
