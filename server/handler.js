@@ -12,6 +12,8 @@ import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk
 import { RoomService, RateLimiter } from './room-service.js';
 import { DynamoStore } from './dynamo-store.js';
 
+const SEND_RETRY_DELAYS_MS = [100, 300, 900]; // 送信が 429 で断られたときに、送り直すまで待つ時間
+
 export function createHandler(game, { tableName = process.env.TABLE_NAME } = {}) {
     // 以下は Lambda の呼び出しをまたいで使い回す
     const store = new DynamoStore(tableName);
@@ -25,19 +27,28 @@ export function createHandler(game, { tableName = process.env.TABLE_NAME } = {})
             clients.set(endpoint, new ApiGatewayManagementApiClient({ endpoint }));
         }
         const client = clients.get(endpoint);
+        // API Gateway に多すぎると断られたら（429）、間を空けて送り直す
         // 送れなかったら、CloudWatch のログに1行残す（切れた接続の GoneException も、古い接続に送っていないかの手がかりになる）
         const send = async (connectionId, message) => {
-            try {
-                await client.send(new PostToConnectionCommand({
-                    ConnectionId: connectionId,
-                    Data: JSON.stringify(message)
-                }));
-            } catch (error) {
-                console.log(JSON.stringify({
-                    event: 'send_failed', connectionId, type: message.type, version: message.version,
-                    error: error.name, status: error.$metadata?.httpStatusCode
-                }));
-                throw error;
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    await client.send(new PostToConnectionCommand({
+                        ConnectionId: connectionId,
+                        Data: JSON.stringify(message)
+                    }));
+                    return;
+                } catch (error) {
+                    const throttled = error.name === 'TooManyRequestsException' || error.$metadata?.httpStatusCode === 429;
+                    if (throttled && attempt < SEND_RETRY_DELAYS_MS.length) {
+                        await new Promise(resolve => setTimeout(resolve, SEND_RETRY_DELAYS_MS[attempt]));
+                        continue;
+                    }
+                    console.log(JSON.stringify({
+                        event: 'send_failed', connectionId, type: message.type, version: message.version,
+                        error: error.name, status: error.$metadata?.httpStatusCode, attempts: attempt + 1
+                    }));
+                    throw error;
+                }
             }
         };
         return new RoomService({ game, store, send, connectionCache, limiter });
