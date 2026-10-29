@@ -203,7 +203,7 @@ const net = new NetplayClient({
     storageKey: 'mineBlocks.online',  // 参加情報を保存するキー（ゲームごとに変える）
     cpuStepDelayMs: 450               // CPU の手（cpu: true）を間を置いて届ける（省略するとすぐ届ける）
     // 手ごとに変えるなら関数を渡す: (next, previous) => ms。next はこれから見せる state、previous は直前に見せた state（なければ null）
-    // 1手に1回だけ呼ぶので、乱数で決めてもよい（katan で、CPU が交渉に答える手だけ2〜4秒待たせる）
+    // 1手に1回だけ呼ぶので、乱数で決めてもよい。見せ方を遅らせるだけで、サーバーではもう決まっている
 });
 net.on('lobby', (lobby) => render(lobby));
 net.on('state', ({ view, cpu }) => show(view));
@@ -375,6 +375,7 @@ gh secret set AWS_DEPLOY_ROLE_ARN --repo 123yoshidandy/<ゲーム> --body "$ARN"
 `template/deploy-server.yml` を、ゲームの `.github/workflows/deploy-server.yml` にそのままコピーする（mine-blocks で動いたものを元にした見本）。ゲームの名前はリポジトリの名前から取るので、書き換えは要らない。次の前提がそろっていれば動く。
 
 - samconfig.toml のスタック名が `<リポジトリの名前>-online`
+- samconfig.toml に `s3_prefix = "<リポジトリの名前>-online"` がある（手元からのデプロイも、CloudFormation 用のロールが読める場所に置くため。下の注意を参照）
 - package.json に `test` と `build:server` がある
 - サーバーのテンプレートと samconfig.toml が `server/` にある
 
@@ -393,6 +394,8 @@ gh secret set AWS_DEPLOY_ROLE_ARN --repo 123yoshidandy/<ゲーム> --body "$ARN"
 使っている Actions は、コミットの番号で固定している。上げるときは、見本を直してから各ゲームにコピーし直す。
 
 一度 `--role-arn` を付けてデプロイすると、そのスタックは以後も CloudFormation 用のロールを使う。手元から `npm run deploy:server` でデプロイしても同じロールが使われるので、権限が足りなければ手元のデプロイも失敗する。権限が足りずに失敗したら、エラーに出た操作を `github-deploy.yaml` に足して、ロールのスタックをデプロイし直す。
+
+手元からのデプロイは、`s3_prefix` がなければ成果物をバケットの前置きなしの場所に置く。CloudFormation 用のロールは `<ゲーム>-online/` の下しか読めない（ほかのゲームの成果物を読めないように絞っている）ので、Lambda の更新が s3:GetObject で断られて元に戻る（dominion で起きた）。自動デプロイを入れたら、samconfig.toml の `[default.deploy.parameters]` に `s3_prefix = "<ゲーム>-online"` を書く。
 
 ## 開発
 
