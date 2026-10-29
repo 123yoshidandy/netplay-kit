@@ -232,6 +232,27 @@ describe('NetplayClient の届く順番', () => {
         net.close();
     });
 
+    it('cpuStepDelayMs に関数を渡すと、CPU の手ごとに間を変えられる（1手に1回だけ呼ぶ）', async () => {
+        const calls = [];
+        const net = new NetplayClient({
+            storageKey: 'test.delayFn',
+            cpuStepDelayMs: (next, previous) => {
+                calls.push([next.view.step, previous?.view.step ?? null]);
+                return next.view.step === 2 ? 80 : 0;
+            }
+        });
+        const shown = [];
+        net.on('state', message => shown.push({ step: message.view.step, at: Date.now() }));
+        net.receive({ type: 'state', matchId: 1, view: { step: 0 } });
+        net.receive({ type: 'state', matchId: 1, view: { step: 1 }, cpu: true });
+        net.receive({ type: 'state', matchId: 1, view: { step: 2 }, cpu: true });
+        expect(shown.map(s => s.step)).toEqual([0, 1]);
+        await waitFor(() => shown.length === 3);
+        expect(shown[2].at - shown[1].at).toBeGreaterThanOrEqual(75);
+        expect(calls).toEqual([[1, 0], [2, 1]]);
+        net.close();
+    });
+
     it('ロビーに戻ったら、まだ見せていない前の対戦のビューを捨てる', () => {
         const net = new NetplayClient({ storageKey: 'test.order2', cpuStepDelayMs: 1000 });
         const order = [];

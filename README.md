@@ -202,6 +202,8 @@ const net = new NetplayClient({
     serverUrl: NetplayClient.resolveServerUrl({ deployed: 'wss://...' }), // localhost では ws://localhost:8787、?server= で変えられる
     storageKey: 'mineBlocks.online',  // 参加情報を保存するキー（ゲームごとに変える）
     cpuStepDelayMs: 450               // CPU の手（cpu: true）を間を置いて届ける（省略するとすぐ届ける）
+    // 手ごとに変えるなら関数を渡す: (next, previous) => ms。next はこれから見せる state、previous は直前に見せた state（なければ null）
+    // 1手に1回だけ呼ぶので、乱数で決めてもよい（katan で、CPU が交渉に答える手だけ2〜4秒待たせる）
 });
 net.on('lobby', (lobby) => render(lobby));
 net.on('state', ({ view, cpu }) => show(view));

@@ -24,6 +24,7 @@
         // serverUrl: 接続先（NetplayClient.resolveServerUrl で決めるとよい）
         // storageKey: 参加情報を保存する localStorage のキー（ゲームごとに変える）
         // cpuStepDelayMs: cpu: true の state を、この間隔で順に届ける（0 ならすぐ届ける）
+        //   手ごとに変えるなら (next, previous) => ms を渡す（next はこれから見せる state、previous は直前に見せた state か null）
         // syncIdleMs: 部屋にいて lobby・state がこの間届かなければ、取りこぼしがないかサーバーに確かめる（0 なら確かめない）
         constructor({ serverUrl, storageKey, pingIntervalMs = DEFAULT_PING_INTERVAL_MS, syncIdleMs = DEFAULT_SYNC_IDLE_MS,
             reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS, cpuStepDelayMs = 0, roomParam = 'room', keepParams = ['server'] } = {}) {
@@ -47,6 +48,8 @@
             this.stateQueue = [];
             this.stateTimer = null;
             this.lastStateAt = 0;
+            this.lastState = null;             // 直前に見せた state（cpuStepDelayMs が関数のときに渡す）
+            this.nextDelay = null;             // 次の CPU の手を待たせる時間（関数は1手に1回だけ呼ぶ）
             this.pingTimer = null;
             this.syncTimer = null;
             this.reconnectTimer = null;
@@ -416,7 +419,7 @@
         playStates() {
             if (this.stateTimer || this.stateQueue.length === 0) return;
             const next = this.stateQueue[0];
-            const wait = next.cpu ? this.lastStateAt + this.cpuStepDelayMs - Date.now() : 0;
+            const wait = next.cpu ? this.lastStateAt + this.stepDelay(next) - Date.now() : 0;
             if (wait > 0) {
                 this.stateTimer = setTimeout(() => {
                     this.stateTimer = null;
@@ -431,15 +434,27 @@
                 this.emit('message', next);
             } else {
                 this.lastStateAt = Date.now();
+                this.lastState = next;
                 this.emit('state', next);
             }
             this.playStates();
+        }
+
+        // 関数なら、同じ手には同じ値を使う（待つあいだにタイマーで求め直しても、乱数の値が変わらないように）
+        stepDelay(next) {
+            if (typeof this.cpuStepDelayMs !== 'function') return this.cpuStepDelayMs;
+            if (this.nextDelay?.message !== next) {
+                this.nextDelay = { message: next, ms: Number(this.cpuStepDelayMs(next, this.lastState)) || 0 };
+            }
+            return this.nextDelay.ms;
         }
 
         clearStates() {
             clearTimeout(this.stateTimer);
             this.stateTimer = null;
             this.stateQueue = [];
+            this.lastState = null;
+            this.nextDelay = null;
         }
 
         // ===== 招待URL =====
