@@ -390,7 +390,7 @@ gh secret set AWS_DEPLOY_ROLE_ARN --repo 123yoshidandy/<ゲーム> --body "$ARN"
 
 使っている Actions は、コミットの番号で固定している。上げるときは、見本を直してから各ゲームにコピーし直す。
 
-一度 `--role-arn` を付けてデプロイすると、そのスタックは以後も CloudFormation 用のロールを使う。手元から `npm run deploy:server` でデプロイしても同じロールが使われるので、権限が足りなければ手元のデプロイも失敗する。権限が足りずに失敗したら、エラーに出た操作を `github-deploy.yaml` に足して、ロールのスタックをデプロイし直す。
+一度 `--role-arn` を付けてデプロイすると、そのスタックは以後も CloudFormation 用のロールを使う。手元から `npm run deploy:server` でデプロイしても同じロールが使われるので、権限が足りなければ手元のデプロイも失敗する。権限が足りずに失敗したら、エラーに出た操作を `github-deploy.yaml` に足して、ロールのスタックをデプロイし直す。手元からのデプロイは成果物を前置きなしの場所に置くので、CloudFormation 用のロールは SAM のバケット全体を読めるようにしてある（`<ゲーム>-online/` の下だけにしていたら、dominion の手元からのデプロイが s3:GetObject で断られて元に戻った）。
 
 ## 開発
 

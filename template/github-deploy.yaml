@@ -128,10 +128,11 @@ Resources:
               - Effect: Allow
                 Action: cloudformation:CreateChangeSet
                 Resource: !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
-              # Lambda のコードとテンプレートを読む
+              # Lambda のコードとテンプレートを読む。バケット全体を読めるようにする
+              # （スタックにこのロールが付くと、手元からの sam deploy もこのロールで動く。手元からは前置きなしの場所に置くため）
               - Effect: Allow
                 Action: s3:GetObject
-                Resource: !Sub arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/${GameName}-online/*
+                Resource: arn:aws:s3:::aws-sam-cli-managed-default-samclisourcebucket-*/*
               - Effect: Allow
                 Action: lambda:*
                 Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${GameName}-online-*
