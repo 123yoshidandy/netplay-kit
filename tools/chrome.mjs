@@ -54,7 +54,15 @@ export async function launchChrome({ port = 9333, headless = true, mute = true, 
         child.once('exit', resolve);
         child.once('error', resolve); // 起動できなかったときは exit が来ない
     }).then(() => { alive = false; });
-    const removeProfile = () => fs.rmSync(profile, { recursive: true, force: true, maxRetries: 3 });
+    // Chrome の子プロセスが書き終わるまで ENOTEMPTY になることがあるので、やり直す
+    // 消せなくても close は投げない（呼び出し側の finally の続きを止めないため）
+    const removeProfile = () => {
+        try {
+            fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+        } catch (error) {
+            console.warn(`Chrome のユーザーデータのディレクトリを消せませんでした: ${profile} (${error.code ?? error.message})`);
+        }
+    };
     // node の終わり際は Chrome の終了を待てないので、少し待ってから消す役を切り離して残す
     const cleanup = () => {
         if (alive) child.kill('SIGKILL');

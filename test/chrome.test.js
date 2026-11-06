@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,6 +29,7 @@ describe('launchChrome の片付け', () => {
     afterEach(() => {
         process.env.TMPDIR = originalTmp;
         delete process.env.FAKE_CHROME_IGNORE_TERM;
+        vi.restoreAllMocks();
         fs.rmSync(tmp, { recursive: true, force: true });
     });
 
@@ -48,6 +49,19 @@ describe('launchChrome の片付け', () => {
         await chrome.close();
         expect(isAlive(pid)).toBe(false);
         expect(fs.readdirSync(tmp)).toEqual([]);
+    });
+
+    it('ユーザーデータのディレクトリを消せなくても、close は投げずに警告だけ出す', async () => {
+        const chrome = await launchChrome({ port: 9368, chromePath: fakeChrome });
+        const { pid } = await version(9368);
+        const rmSync = vi.spyOn(fs, 'rmSync').mockImplementation(() => {
+            throw Object.assign(new Error('directory not empty'), { code: 'ENOTEMPTY' });
+        });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await expect(chrome.close()).resolves.toBeUndefined();
+        expect(rmSync).toHaveBeenCalledWith(expect.stringContaining('netplay-chrome-'), expect.objectContaining({ maxRetries: expect.any(Number) }));
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('ENOTEMPTY'));
+        expect(isAlive(pid)).toBe(false);
     });
 
     it('ポートが使われていれば、その Chrome につながずにエラーにする', async () => {
