@@ -2,9 +2,10 @@
 /**
  * netplay-kit のファイルを、各ゲームのリポジトリにコピーする（コピーして同期）
  *
- *   node scripts/sync.mjs <ゲームのリポジトリ> [--server-dir server/netplay] [--client-dir js/netplay] [--force]
+ *   node scripts/sync.mjs <ゲームのリポジトリ> [--server-dir server/netplay] [--client-dir js/netplay] [--force] [--allow-dirty]
  *     サーバー用と画面用のファイルを決まったフォルダにコピーし、netplay-kit.lock.json（版・コミット・各ファイルの sha256）を置く
  *     コピー先が手で直されていたら、上書きせずに止める（--force で上書きする）
+ *     netplay-kit の配るファイルにコミットしていない変更があれば止める（作業中のコードを配らないように。--allow-dirty で同期する）
  *
  *   node scripts/sync.mjs check <ゲームのリポジトリ>
  *     コピー先が手で直されていないかを確かめる（直されていたら終了コード1）。netplay-kit より古ければ知らせる
@@ -23,10 +24,11 @@ const CLIENT_FILES = ['netplay-client.js', 'netplay-client.mjs'];
 
 // ===== 入口 =====
 
-export function main(argv) {
+// dirty: netplay-kit にコミットしていない変更があるか（テストで決めるため。省略すると git で確かめる）
+export function main(argv, { dirty } = {}) {
     const args = parseArgs(argv);
     if (!args.repo) {
-        console.error('使い方: node scripts/sync.mjs [check] <ゲームのリポジトリ> [--server-dir 場所] [--client-dir 場所] [--force]');
+        console.error('使い方: node scripts/sync.mjs [check] <ゲームのリポジトリ> [--server-dir 場所] [--client-dir 場所] [--force] [--allow-dirty]');
         return 2;
     }
     const repo = path.resolve(args.repo);
@@ -34,16 +36,17 @@ export function main(argv) {
         console.error(`リポジトリが見つかりません: ${repo}`);
         return 2;
     }
-    return args.command === 'check' ? check(repo) : sync(repo, args);
+    return args.command === 'check' ? check(repo) : sync(repo, args, dirty ?? kitIsDirty());
 }
 
 function parseArgs(argv) {
-    const args = { command: 'sync', repo: null, serverDir: null, clientDir: null, force: false };
+    const args = { command: 'sync', repo: null, serverDir: null, clientDir: null, force: false, allowDirty: false };
     const rest = [...argv];
     if (rest[0] === 'check' || rest[0] === 'sync') args.command = rest.shift();
     while (rest.length > 0) {
         const arg = rest.shift();
         if (arg === '--force') args.force = true;
+        else if (arg === '--allow-dirty') args.allowDirty = true;
         else if (arg === '--server-dir') args.serverDir = rest.shift();
         else if (arg === '--client-dir') args.clientDir = rest.shift();
         else args.repo = arg;
@@ -53,7 +56,11 @@ function parseArgs(argv) {
 
 // ===== 同期 =====
 
-function sync(repo, args) {
+function sync(repo, args, dirty) {
+    if (dirty && !args.allowDirty) {
+        console.error('netplay-kit の server・client に、コミットしていない変更があります。コミットしてから同期してください（作業中のまま配るなら --allow-dirty）');
+        return 1;
+    }
     const lock = readLock(repo);
     const serverDir = args.serverDir ?? lock?.serverDir ?? 'server/netplay';
     const clientDir = args.clientDir ?? lock?.clientDir ?? detectClientDir(repo);
@@ -173,12 +180,20 @@ function kitVersion() {
     let commit = 'unknown';
     try {
         commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: KIT_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-        const dirty = execFileSync('git', ['status', '--porcelain', '--', 'server', 'client'], { cwd: KIT_ROOT, encoding: 'utf8' }).trim();
-        if (dirty) commit += '-dirty';
+        if (kitIsDirty()) commit += '-dirty';
     } catch {
         // git がなくても同期はできる
     }
     return { version, commit };
+}
+
+// 配るファイル（server・client）に、コミットしていない変更があるか（git がなければ false）
+function kitIsDirty() {
+    try {
+        return execFileSync('git', ['status', '--porcelain', '--', 'server', 'client'], { cwd: KIT_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '';
+    } catch {
+        return false;
+    }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

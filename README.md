@@ -280,6 +280,7 @@ node scripts/sync.mjs check ~/MyProjects/mine-blocks
 - コピーしたファイルの先頭には、版とコミットを書いた1行が付く
 - `netplay-kit.lock.json` には、版（package.json の version）・コミット・各ファイルの sha256 が入る。コピー先が手で直されていたら、同期は止まる（`--force` で上書きする）
 - 直したいところがあれば、netplay-kit で直してテストし、コミットしてから各ゲームに同期する
+- netplay-kit の `server/`・`client/` にコミットしていない変更があれば、同期は止まる（ほかの作業の途中のコードを配らないように）。作業中のまま試しに配るときだけ `--allow-dirty` を付ける（lock のコミットに `-dirty` が付く）
 
 ## 各ゲームへの移し方
 
