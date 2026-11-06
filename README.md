@@ -432,4 +432,4 @@ expect(server.store.writes).toBe(...);              // 保存・読み込みの�
 
 ### 通し試験の道具
 
-`tools/chrome.mjs` の `launchChrome()` で Chrome を起動し、`openPage(url)` で開いたページに `eval`・`waitFor`・`goto`・`shot` を使う。使い方は `examples/e2e.mjs` を参照。
+`tools/chrome.mjs` の `launchChrome()` で Chrome を起動し、`openPage(url)` で開いたページに `eval`・`waitFor`・`goto`・`shot` を使う。使い方は `examples/e2e.mjs` を参照。音は既定で消す（`--mute-audio`。headless でも鳴るため）。音を確かめたいときは `launchChrome({ mute: false })` にする。

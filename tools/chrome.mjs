@@ -11,6 +11,8 @@
  *   await b.waitFor(`document.querySelector('#players').children.length === 2`);
  *   await a.shot('lobby.png');
  *   await chrome.close();
+ *
+ * 音は既定で消す（headless でも鳴る）。音を確かめたいときは launchChrome({ mute: false })
  */
 
 import fs from 'node:fs';
@@ -26,7 +28,7 @@ const CHROME_PATHS = [
 ].filter(Boolean);
 
 // Chrome を起動して、DevTools Protocol につなぐ
-export async function launchChrome({ port = 9333, headless = true, chromePath = CHROME_PATHS.find(p => fs.existsSync(p)) } = {}) {
+export async function launchChrome({ port = 9333, headless = true, mute = true, chromePath = CHROME_PATHS.find(p => fs.existsSync(p)) } = {}) {
     if (!chromePath) throw new Error('Chrome が見つかりません。CHROME_PATH で場所を指定してください');
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'netplay-chrome-'));
     const child = spawn(chromePath, [
@@ -34,7 +36,8 @@ export async function launchChrome({ port = 9333, headless = true, chromePath = 
         `--user-data-dir=${profile}`,
         '--no-first-run',
         '--no-default-browser-check',
-        ...(headless ? ['--headless=new'] : [])
+        ...(headless ? ['--headless=new'] : []),
+        ...(mute ? ['--mute-audio'] : [])
     ], { stdio: 'ignore' });
 
     const version = await waitForJson(`http://127.0.0.1:${port}/json/version`);
