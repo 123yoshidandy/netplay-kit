@@ -3,10 +3,13 @@
  * 1つのテーブルに、部屋（pk = ROOM#部屋番号）と接続（pk = CONN#接続ID）を入れる
  * 接続には部屋番号だけを持ち、席番号は持たない（席は部屋の players から connectionId で求める）
  * どちらも expiresAt（UNIX秒）を過ぎると DynamoDB の TTL で自動的に消える
+ * 公開の部屋の一覧は、テーブルを Scan して絞る（索引を足さずに済むように。部屋が数百までなら十分に軽い）
  */
 
+const MAX_SCAN_PAGES = 10; // 公開の部屋の一覧で読むページ（1ページ最大1MB）の上限
+
 import { DynamoDBClient, ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ConflictError } from './room-service.js';
 
 export class DynamoStore {
@@ -50,6 +53,29 @@ export class DynamoStore {
             }
             throw error;
         }
+    }
+
+    // 公開の部屋で、ロビーで待っていて、期限を過ぎていないもの（一覧に要る項目だけを読む）
+    async listPublicRooms(nowSeconds = Math.floor(Date.now() / 1000)) {
+        const rooms = [];
+        let startKey;
+        for (let page = 0; page < MAX_SCAN_PAGES; page++) {
+            const { Items = [], LastEvaluatedKey } = await this.client.send(new ScanCommand({
+                TableName: this.tableName,
+                FilterExpression: 'begins_with(pk, :room) AND #isPublic = :true AND #status = :lobby AND #expiresAt > :now',
+                ProjectionExpression: '#code, #isPublic, #status, #expiresAt, #createdAt, #players, #settings',
+                ExpressionAttributeNames: {
+                    '#code': 'code', '#isPublic': 'isPublic', '#status': 'status', '#expiresAt': 'expiresAt',
+                    '#createdAt': 'createdAt', '#players': 'players', '#settings': 'settings'
+                },
+                ExpressionAttributeValues: { ':room': 'ROOM#', ':true': true, ':lobby': 'lobby', ':now': nowSeconds },
+                ExclusiveStartKey: startKey
+            }));
+            rooms.push(...Items);
+            if (!LastEvaluatedKey) break;
+            startKey = LastEvaluatedKey;
+        }
+        return rooms;
     }
 
     async getConnection(connectionId) {

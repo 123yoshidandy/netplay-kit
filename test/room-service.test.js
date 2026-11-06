@@ -377,3 +377,64 @@ describe('サンプル③：早解き', () => {
         expect(b.last('state').view.wins).toEqual([0, 0]);
     });
 });
+
+describe('公開の部屋', () => {
+    it('public: true で作った部屋だけが一覧に載り、token は載らない', async () => {
+        const server = createTestServer(raceGame);
+        const host = server.connect();
+        await host.send('create', { name: 'あお', public: true });
+        expect(host.last('lobby').public).toBe(true);
+        await server.createRoom(['ないしょ']);
+
+        const guest = server.connect();
+        await guest.send('listRooms');
+        const { rooms } = guest.last('rooms');
+        expect(rooms).toEqual([{
+            roomCode: host.last('joined').roomCode, hostName: 'あお', players: 1, maxPlayers: 4,
+            settings: { winsNeeded: 3 }, createdAt: server.clock.now
+        }]);
+        expect(JSON.stringify(rooms)).not.toContain('token');
+
+        await guest.send('join', { roomCode: rooms[0].roomCode, name: 'みどり' });
+        expect(guest.last('joined').seat).toBe(1);
+    });
+
+    it('始まった部屋・満員の部屋・だれもつながっていない部屋・期限を過ぎた部屋は載らない', async () => {
+        const server = createTestServer(raceGame);
+        const list = async () => {
+            const viewer = server.connect();
+            await viewer.send('listRooms');
+            return viewer.last('rooms').rooms.map(room => room.hostName);
+        };
+        const open = async (names) => {
+            const [host, ...others] = [server.connect(), ...names.slice(1).map(() => server.connect())];
+            await host.send('create', { name: names[0], public: true });
+            for (const [i, client] of others.entries()) {
+                await client.send('join', { roomCode: host.last('joined').roomCode, name: names[i + 1] });
+            }
+            return [host, ...others];
+        };
+        const [started] = await open(['始まった', 'B']);
+        await started.send('start');
+        await open(['満員', 'B', 'C', 'D']);
+        const [gone] = await open(['いない']);
+        await gone.disconnect();
+        server.clock.now += 1000;
+        await open(['あたらしい']);
+        expect(await list()).toEqual(['あたらしい']);
+
+        server.clock.now += 2 * 24 * 60 * 60 * 1000 + 1000;
+        expect(await list()).toEqual([]);
+    });
+
+    it('一覧は新しく作られた順に並ぶ', async () => {
+        const server = createTestServer(raceGame);
+        for (const name of ['1つめ', '2つめ', '3つめ']) {
+            await server.connect().send('create', { name, public: true });
+            server.clock.now += 1000;
+        }
+        const viewer = server.connect();
+        await viewer.send('listRooms');
+        expect(viewer.last('rooms').rooms.map(room => room.hostName)).toEqual(['3つめ', '2つめ', '1つめ']);
+    });
+});

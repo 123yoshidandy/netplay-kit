@@ -25,10 +25,11 @@ export const ROOM_CODE_LENGTH = 4; // 部屋番号の桁数（画面側の Netpl
 const MAX_RETRIES = 3;              // 同時に操作されて保存がぶつかったときのやり直し回数
 const MAX_CODE_ATTEMPTS = 10;       // 部屋番号が使用中の部屋とぶつかったときに作り直す回数
 const CONNECTION_CACHE_SIZE = 1000;
+const PUBLIC_ROOMS_LIMIT = 20;      // 公開の部屋の一覧に載せる数（新しく作られた順）
 
 // 共通側が受け付ける操作（ゲームの定義の actions に同じ名前は使えない）
 export const RESERVED_ACTIONS = ['create', 'join', 'leave', 'ping', 'start', 'ready', 'backToLobby',
-    'setSettings', 'addCpu', 'removeCpu', 'stamp'];
+    'setSettings', 'addCpu', 'removeCpu', 'stamp', 'listRooms'];
 
 // 保存がぶつかったとき（他の操作が先に保存した）に store が投げるエラー
 export class ConflictError extends Error {}
@@ -77,7 +78,7 @@ export class RateLimiter {
 
 export class RoomService {
     // game: ゲームの定義（README の「ゲームの定義」）
-    // store: getRoom(code) / putRoom(room, previousVersion) / getConnection(id) / putConnection(connection) / deleteConnection(id)
+    // store: getRoom(code) / putRoom(room, previousVersion) / listPublicRooms(nowSeconds) / getConnection(id) / putConnection(connection) / deleteConnection(id)
     // send: (connectionId, message) => Promise（接続が切れていれば失敗してよい）
     // connectionCache / limiter: Lambda の呼び出しをまたいで使い回すもの（省略するとこのインスタンスだけで持つ）
     constructor({ game, store, send, createToken = () => crypto.randomUUID(), now = () => Date.now(), random = Math.random,
@@ -163,6 +164,7 @@ export class RoomService {
         switch (message.action) {
             case 'create': return this.createRoom(connectionId, message);
             case 'join': return this.joinRoom(connectionId, message);
+            case 'listRooms': return this.listPublicRooms(connectionId);
             case 'ping':
                 // 期限を使わないゲームで、端末の版が付いていなければ、部屋を読まずに返す（接続を保つための ping で読み込みを増やさない）
                 if (!this.game.deadline && !Number.isFinite(message.version)) return [this.pong(connectionId, message)];
@@ -196,10 +198,13 @@ export class RoomService {
 
     // ===== 部屋に入る =====
 
-    async createRoom(connectionId, { name }) {
+    // public: true なら公開の部屋にする（部屋番号を知らなくても、listRooms の一覧から入れる）
+    async createRoom(connectionId, { name, public: isPublic }) {
         const room = {
             code: null,
             version: 0,
+            isPublic: isPublic === true,
+            createdAt: this.now(),
             status: 'lobby', // lobby → playing → ended → playing（再戦）／lobby
             matchId: 0,      // 対戦ごとに増える番号（前の対戦のメッセージが混ざらないように）
             settings: this.game.settings?.defaults?.() ?? {},
@@ -282,6 +287,27 @@ export class RoomService {
             ...this.withLobby(room, lobbyBefore, outbox).filter(entry => entry.connectionId !== connectionId),
             ...started
         ];
+    }
+
+    // 入れる公開の部屋の一覧を返す（部屋に入っていなくてよい）
+    // 載せるのは、ロビーで待っていて、満員でなく、つながっている人がいる部屋だけ。token などは載せない
+    async listPublicRooms(connectionId) {
+        const nowSeconds = Math.floor(this.now() / 1000);
+        const rooms = (await this.store.listPublicRooms(nowSeconds))
+            .filter(room => room.isPublic && room.status === 'lobby' && room.expiresAt > nowSeconds)
+            .filter(room => this.activePlayers(room).length < this.game.maxPlayers)
+            .filter(room => room.players.some(player => !player.isCPU && player.connectionId))
+            .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+            .slice(0, PUBLIC_ROOMS_LIMIT)
+            .map(room => ({
+                roomCode: room.code,
+                hostName: room.players[this.hostSeat(room)]?.name ?? '',
+                players: this.activePlayers(room).length,
+                maxPlayers: this.game.maxPlayers,
+                settings: this.game.settings?.forLobby ? this.game.settings.forLobby(room.settings) : room.settings,
+                createdAt: room.createdAt ?? null
+            }));
+        return [{ connectionId, message: { type: 'rooms', rooms } }];
     }
 
     // ===== ロビー・開始・再戦 =====
@@ -536,6 +562,7 @@ export class RoomService {
             type: 'lobby',
             roomCode: room.code,
             status: room.status,
+            public: Boolean(room.isPublic),
             matchId: room.matchId,
             hostSeat: this.hostSeat(room),
             rematch: this.game.rematch,

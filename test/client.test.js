@@ -317,3 +317,34 @@ describe('読み込み方', () => {
         expect(Object.keys(context)).toEqual(['NetplayClient']);
     });
 });
+
+describe('NetplayClient の公開の部屋', () => {
+    let dev;
+    let url;
+
+    beforeAll(() => {
+        const port = 19887 + Math.floor(Math.random() * 1000);
+        dev = startDevServer(relayGame, { port, log: () => {} });
+        url = `ws://localhost:${port}`;
+    });
+    afterAll(() => dev.close());
+
+    it('公開の部屋を作ると、ほかの人が listRooms の一覧から入れる', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.public.a' });
+        const b = new NetplayClient({ serverUrl: url, storageKey: 'test.public.b' });
+        expect(await b.listRooms()).toEqual([]);
+
+        await a.createRoom('あお', { public: true });
+        await waitFor(() => a.lobby);
+        expect(a.lobby.public).toBe(true);
+
+        const rooms = await b.listRooms();
+        expect(rooms.map(room => [room.roomCode, room.hostName, room.players])).toEqual([[a.lobby.roomCode, 'あお', 1]]);
+        await b.enterRoom(rooms[0].roomCode, 'みどり');
+        await waitFor(() => a.lobby.players.length === 2);
+        expect(b.isInRoom()).toBe(true);
+
+        a.close();
+        b.close();
+    });
+});

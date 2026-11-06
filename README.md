@@ -146,6 +146,14 @@ export default {
 - 画面では桁数を直接書かず、`NetplayClient.ROOM_CODE_LENGTH`（入力欄の maxlength や説明の文）と `NetplayClient.isRoomCode(code)`（入力の確認）を使う
 - サーバーは、桁数の違う部屋番号でも参加を断らない（4桁に変える前に作られた5桁の部屋にも、期限までは入れる）
 
+### 公開の部屋
+
+- `create` に `public: true` を付けると、公開の部屋になる。部屋番号を知らない人も、`listRooms` の一覧から部屋番号を知って `join` で入れる（入ってからは、番号付きの部屋と同じ）
+- 一覧に載るのは、ロビーで待っていて、満員でなく、つながっている人がいて、期限を過ぎていない部屋だけ。新しく作られた順に最大20部屋
+- 一覧に載せるのは、部屋番号・作った人の名前・人数・定員・設定（`settings.forLobby` を通したもの）・作った時刻。token は載せない
+- 一覧は DynamoDB のテーブルを Scan して絞る（索引を足さないので、各ゲームのテンプレートは変えなくてよい）。Scan はテーブル全体を読むので、画面では一覧を開いたときと「更新」を押したときに取り、短い間隔で取り続けない
+- 部屋を作ったあとで公開・非公開は変えられない
+
 ## メッセージ
 
 すべてのメッセージに `serverNow`（サーバーの時刻）が付く。
@@ -154,7 +162,8 @@ export default {
 
 | action | 内容 |
 | --- | --- |
-| `create` `{ name }` | 部屋を作る |
+| `create` `{ name, public? }` | 部屋を作る（`public: true` なら公開の部屋） |
+| `listRooms` | 入れる公開の部屋の一覧を頼む（部屋に入っていなくてよい） |
 | `join` `{ roomCode, name, token? }` | 部屋に入る（token が参加者のものなら、その席に再接続する） |
 | `leave` | 部屋を出る |
 | `ping` `{ clientTime, version? }` | 接続の生存確認（期限のあるゲームでは、期限も確かめる）。`version`（端末が最後に受け取った部屋の版）より部屋が新しければ、今の `lobby` と `state` を送り直す |
@@ -168,8 +177,9 @@ export default {
 | type | 内容 |
 | --- | --- |
 | `joined` | `{ roomCode, seat, token, playerId }` 部屋に入った（再接続の情報として保存する） |
-| `lobby` | `{ roomCode, status, matchId, hostSeat, rematch, settings, players, seat }` 部屋の状態。対戦中も、参加者が変わるたびに届く。`seat` は受け取る人の今の席 |
+| `lobby` | `{ roomCode, status, public, matchId, hostSeat, rematch, settings, players, seat }` 部屋の状態。対戦中も、参加者が変わるたびに届く。`seat` は受け取る人の今の席 |
 | `state` | `{ matchId, view, cpu? }` 自分のビュー |
+| `rooms` | `{ rooms: [{ roomCode, hostName, players, maxPlayers, settings, createdAt }] }` 入れる公開の部屋の一覧（`listRooms` の返事） |
 | `error` | `{ message, code }`（`room_not_found`・`not_member`・`room_full`・`already_started`・`not_host`・`not_enough_players`・`cannot_start`・`rejected`・`busy`・`invalid`） |
 | `left` / `pong` `{ clientTime }` / `stamp` `{ seat, stamp }` | 退出した / ping の返事 / スタンプ |
 | それ以外 | ゲーム独自のメッセージ（`ctx.reply` などで送ったもの） |
@@ -212,6 +222,8 @@ net.on('error', ({ message, code }) => showError(message));
 net.on('connection', (connected) => showConnection(connected));
 
 await net.createRoom(name);          // joinRoom(code, name) / resume()
+await net.createRoom(name, { public: true }); // 公開の部屋を作る
+const rooms = await net.listRooms(); // 入れる公開の部屋の一覧（入るときは enterRoom(rooms[0].roomCode, name)）
 net.send('solved', { round: 1 });    // ゲームの操作（今の matchId を付けて送る）
 net.start(); net.ready(); net.backToLobby(); net.setSettings({ winsNeeded: 2 }); net.stamp('👍'); net.leave();
 net.serverNow();                     // サーバーの今の時刻（toLocalTime(serverTime) で端末の時刻に直す）
@@ -229,6 +241,7 @@ await net.joinFromInvite(name);      // 招待URLの部屋に enterRoom で入�
 - 画面の描画は持たない。dominion の OnlineGameController のような「ローカル対戦と同じ形」の包みは、各ゲームの側で NetplayClient を使って作る
 - `createRoom`・`joinRoom`・`resume` は送るだけで、つながらなければ例外を投げる。結果は `joined`・`lobby`・`error` のイベントで届く
 - `enterRoom` の reject の `error.code` は、サーバーのコード（`room_not_found`・`room_full`・`already_started` など。`error.fromServer` が true）か、`not_connected`（つながらない）・`disconnected`（返事の前に切れた）・`timeout`（10秒返事がない）。`error` のイベントもこれまでどおり届くので、知らせを二重に出さないようにする
+- `listRooms()` は、一覧が届いたら部屋の配列で resolve する。reject の `error.code` は `not_connected`・`disconnected`・`timeout`（10秒返事がない）
 - `leave()` は、URL の部屋番号（`?room=`）も外す（再読み込みで、また参加しようとしないように）
 
 ### 招待URLで開いたとき
