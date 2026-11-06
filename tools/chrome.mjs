@@ -27,9 +27,18 @@ const CHROME_PATHS = [
     '/usr/bin/chromium'
 ].filter(Boolean);
 
+// node が close を呼ばずに終わるとき（process.exit・未処理の例外）にも、起動した Chrome を止める
+const running = new Set();
+process.on('exit', () => running.forEach(cleanup => cleanup()));
+
 // Chrome を起動して、DevTools Protocol につなぐ
-export async function launchChrome({ port = 9333, headless = true, mute = true, chromePath = CHROME_PATHS.find(p => fs.existsSync(p)) } = {}) {
+// close() は Chrome の終了を待ち（killTimeout ミリ秒で SIGKILL）、一時的なユーザーデータのディレクトリを消す
+export async function launchChrome({ port = 9333, headless = true, mute = true, killTimeout = 5000, chromePath = CHROME_PATHS.find(p => fs.existsSync(p)) } = {}) {
     if (!chromePath) throw new Error('Chrome が見つかりません。CHROME_PATH で場所を指定してください');
+    // 使われているポートで起動すると、前に残った Chrome につながってしまい、close でもそれを止められない
+    if (await fetchJson(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false)) {
+        throw new Error(`ポート ${port} はすでに使われています。前の Chrome が残っていないか pgrep -fl 'remote-debugging-port=${port}' で確かめてください`);
+    }
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'netplay-chrome-'));
     const child = spawn(chromePath, [
         `--remote-debugging-port=${port}`,
@@ -40,12 +49,45 @@ export async function launchChrome({ port = 9333, headless = true, mute = true, 
         ...(mute ? ['--mute-audio'] : [])
     ], { stdio: 'ignore' });
 
-    const version = await waitForJson(`http://127.0.0.1:${port}/json/version`);
-    const chrome = await connectChrome(version.webSocketDebuggerUrl);
+    let alive = true;
+    const exited = new Promise(resolve => {
+        child.once('exit', resolve);
+        child.once('error', resolve); // 起動できなかったときは exit が来ない
+    }).then(() => { alive = false; });
+    const removeProfile = () => fs.rmSync(profile, { recursive: true, force: true, maxRetries: 3 });
+    // node の終わり際は Chrome の終了を待てないので、少し待ってから消す役を切り離して残す
+    const cleanup = () => {
+        if (alive) child.kill('SIGKILL');
+        spawn('sh', ['-c', 'sleep 2; rm -rf "$0"', profile], { detached: true, stdio: 'ignore' }).unref();
+    };
+    running.add(cleanup);
+
+    const stop = async () => {
+        running.delete(cleanup);
+        if (alive) {
+            child.kill();
+            const timer = setTimeout(() => { if (alive) child.kill('SIGKILL'); }, killTimeout);
+            await exited;
+            clearTimeout(timer);
+        }
+        removeProfile();
+    };
+
+    let chrome;
+    try {
+        const version = await waitForJson(`http://127.0.0.1:${port}/json/version`, 10000, () => alive);
+        chrome = await connectChrome(version.webSocketDebuggerUrl);
+    } catch (error) {
+        await stop();
+        throw error;
+    }
     const close = chrome.close;
     chrome.close = async () => {
-        await close();
-        child.kill();
+        try {
+            await close();
+        } finally {
+            await stop();
+        }
     };
     return chrome;
 }
@@ -143,11 +185,16 @@ export async function connectChrome(webSocketDebuggerUrl) {
     };
 }
 
-async function waitForJson(url, timeout = 10000) {
+async function fetchJson(url) {
+    return (await fetch(url)).json();
+}
+
+// isAlive が false になったら（Chrome が落ちたら）、待たずにあきらめる
+async function waitForJson(url, timeout = 10000, isAlive = () => true) {
     const start = Date.now();
-    while (Date.now() - start < timeout) {
+    while (Date.now() - start < timeout && isAlive()) {
         try {
-            return await (await fetch(url)).json();
+            return await fetchJson(url);
         } catch {
             await new Promise(resolve => setTimeout(resolve, 100));
         }

@@ -447,3 +447,5 @@ expect(server.store.writes).toBe(...);              // 保存・読み込みの�
 ### 通し試験の道具
 
 `tools/chrome.mjs` の `launchChrome()` で Chrome を起動し、`openPage(url)` で開いたページに `eval`・`waitFor`・`goto`・`shot` を使う。使い方は `examples/e2e.mjs` を参照。音は既定で消す（`--mute-audio`。headless でも鳴るため）。音を確かめたいときは `launchChrome({ mute: false })` にする。
+
+`chrome.close()` は Chrome の終了を待ち（5秒で止まらなければ SIGKILL。`launchChrome({ killTimeout })` で変えられる）、一時的なユーザーデータのディレクトリを消す。`finally` で必ず呼ぶ。close を呼ばずに node が終わったとき（`process.exit`・未処理の例外）も、起動した Chrome を止める。ただし Ctrl+C などのシグナルで止めたときは残ることがあるので、`pgrep -fl 'remote-debugging-port=<番号>'` で確かめる。`port`（既定 9333）がすでに使われていると、残った Chrome につながらないよう、エラーにする。同時に動かす試験では、別々の `port` を渡す。
