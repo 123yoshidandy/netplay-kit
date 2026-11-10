@@ -49,6 +49,7 @@ export default {
     maxNameLength: 12,
     roomTtlSeconds: 172800,   // 部屋は最後の操作からこの秒数で消える（既定 2日）
     maxCpuSteps: 1000,        // CPU が止まらなくなったときの安全装置
+    maxSpectators: 0,         // 観戦者の上限（つながっている人の数。既定 0 で観戦なし）。「観戦」の節を参照
     maxMessageLength: 8192,   // 端末から受け付けるメッセージの大きさの上限（JSON の文字数）
     messagesPerSecond: 10,    // 1接続あたりの送信回数の上限（Lambda のメモリで数えるので目安）
     messagesBurst: 20,
@@ -71,6 +72,8 @@ export default {
 
     // 各人に送るビュー。since は mark の値（操作の前のログの数など。最初は null）、room は部屋の状態（lobby と同じ形）
     view: (game, seat, { since, room }) => view,
+    // 観戦者に送るビュー（誰の席でもない、公開の情報だけ）。書かなければ、観戦者には state を送らない
+    spectatorView: (game, { since, room }) => view,
     mark: (game) => game.logs.length,                            // 操作の前に呼び、view の since に渡す
     joinMark: (game) => Math.max(0, game.logs.length - 200),     // 再接続したときの since
 
@@ -117,7 +120,8 @@ export default {
 | `now()` / `random()` | サーバーの時刻と乱数（テストでは固定できる） |
 | `isConnected(seat)` | 接続中か（CPU は常に接続中、退出した人は接続していない） |
 | `opponents(seat = 自分)` | 自分以外の、退出していない参加者の席（2人対戦なら相手） |
-| `reply(message)` / `toSeat(seat, message)` / `broadcast(message, { except })` | ゲーム独自のメッセージを送る |
+| `reply(message)` / `toSeat(seat, message)` / `broadcast(message, { except, spectators })` | ゲーム独自のメッセージを送る（`spectators: true` で観戦者にも） |
+| `toSpectators(message)` | つながっている観戦者に、ゲーム独自のメッセージを送る（中継型で、フィールドの様子を観戦者にも見せるときなど） |
 | `reject(理由)` | 操作を断る。理由（`error`）と今のビュー（`state`）を本人にだけ返し、保存しない |
 | `ignore()` | 古い操作・届く順のずれた操作などを、エラーを返さずに黙って捨てる（保存も、状態の送信もしない） |
 | `noState()` | 保存はするが、各人のビューは送らない |
@@ -161,6 +165,36 @@ export default {
 2. 「公開の部屋を探す」ボタンで `await net.listRooms()` を呼び、`hostName`・`players`/`maxPlayers`（と要れば `settings`）を並べる。名前は参加者が入れた文字なので `textContent` で描く。空なら「待っている部屋はありません」と出す
 3. 一覧の部屋を押したら `net.enterRoom(room.roomCode, name)` で入る。入ってからは、部屋番号で入ったときと同じ（`joined`・`lobby` が届き、招待URLも使える）
 
+### 観戦
+
+参加せずに、対戦を見るだけの人（観戦者）を部屋に入れられる。使うゲームだけが `maxSpectators` で有効にする（既定 0。観戦を入れる前のゲームの動きは変わらない）。
+
+- 入り方：`join` に `spectate: true` を付ける（NetplayClient の `spectate(roomCode, name)`）。部屋番号から入るほか、`listRooms` に `spectate: true` を付けると、観戦できる公開の部屋（対戦中で、観戦の枠が空いている部屋）の一覧になる。ロビーでも対戦中でも、満員の部屋でも入れる
+- 観戦者は `room.spectators`（名前・id・token・connectionId）に入り、席を持たない。ホスト・人数の下限と上限・「全員そろったら再戦」の判定には入らない
+- 観戦者ができる操作は `ping`・`leave`・`stamp` だけ。ほかは `code: 'spectator'` で断る
+- 上限：`maxSpectators` は、つながっている観戦者の数で数える。満ちていたら `spectators_full` で断る。切れた観戦者は token で戻れるように一覧に残し、新しい人が入るときに満ちていれば、切れた人から古い順に外す
+- 途中から入ったとき：再接続と同じく `joined`（`seat: null`・`spectator: true`）→ `lobby`（`seat: null`・`spectator: true`）→ `state`（今の観戦者用のビュー。ログは `joinMark` から）の順に届く。token で戻ったときも同じ。取りこぼしたときの版つきの `ping` も、参加者と同じように効く
+- 届くもの：`lobby` には全員分の `spectators`（`{ id, name, connected }`）が載る。観戦者の出入りでも `lobby` が届き直す。ビュー（`state`）は、ゲームの定義の `spectatorView(game, { since, room })` で作る（参加者の操作・CPU の1手ごとに、観戦者全員に同じものを送る。作るのは1回）。`spectatorView` を書かないゲームでは、観戦者に `state` は送らない
+- スタンプ：観戦者も送れて、参加者と観戦者の全員に届く。観戦者が送ったものは `{ seat: null, spectator: { id, name }, stamp }`
+- 試合が終わったら：観戦は続く。参加者と同じく、最後のビュー → `lobby`（`ended`）の順に届き、再戦が始まれば新しい対戦のビューが届く。ロビーに戻っても観戦者のまま（席に座る・席を立つ操作はない）
+- 料金と負荷：観戦者1人ごとに、送信（PostToConnection）がビューのたびに1回増える。Lambda の呼び出しは増えない。観戦者の出入りで部屋を保存するので、保存のやり直しが少し起きやすくなる
+- 公開・非公開：観戦の一覧に載るのは公開の部屋だけ。非公開の部屋も、部屋番号を知っていれば観戦できる
+
+3つの型での扱い
+
+| 型 | 扱い |
+| --- | --- |
+| ①サーバーがゲームを進める（`examples/turn-game.js`） | 主な対象。`spectatorView` に、誰の席でもないビュー（手札・山札の中身など、隠す情報を入れないもの）を書く。各人の `view` と共通の部分を関数にしておくと、隠し忘れが起きにくい |
+| ②中継（`examples/relay-game.js`） | サーバーに盤面がないので、中継（攻撃・フィールドの様子）を `ctx.toSpectators` で観戦者にも送り、画面は中継から描く。観戦者1人ごとに、中継の送信が毎秒数回ずつ増えるので、`maxSpectators` は少なめにする。`spectatorView` は、シードや勝ち数など隠すもののないビューでよい |
+| ③早解き（`examples/race-game.js`） | 例では有効にしていない（観戦を断る）。サーバーには開始時刻と結果しかないので、有効にしても見えるのはカウントダウンと結果だけになる。途中経過を見せるなら、端末から途中経過を送り、`toSpectators` で中継する仕組みが要る |
+
+ゲームに組み込むときは、次を足す
+
+1. ゲームの定義に `maxSpectators` と `spectatorView` を書く（②型は、中継の操作で `toSpectators` も呼ぶ）
+2. 画面に「観戦する」（部屋番号から `net.spectate(code, name)`）と、要れば「観戦できる部屋を探す」（`net.listRooms({ spectate: true })` を並べて `net.spectate(room.roomCode, name)`）を置く。断られたとき（`spectators_full`・`room_not_found` など）は一覧を取り直す
+3. 観戦中（`net.isSpectator()`、`lobby.spectator`）は、操作のボタン・手札・ホストの操作を出さず、`state.view`（観戦者用のビュー）だけで描く。部屋を出るボタンとスタンプは残す
+4. 参加者の画面に、要れば観戦者の人数（`lobby.spectators`）を出す
+
 ## メッセージ
 
 すべてのメッセージに `serverNow`（サーバーの時刻）が付く。
@@ -170,25 +204,25 @@ export default {
 | action | 内容 |
 | --- | --- |
 | `create` `{ name, public? }` | 部屋を作る（`public: true` なら公開の部屋） |
-| `listRooms` | 入れる公開の部屋の一覧を頼む（部屋に入っていなくてよい） |
-| `join` `{ roomCode, name, token? }` | 部屋に入る（token が参加者のものなら、その席に再接続する） |
+| `listRooms` `{ spectate? }` | 入れる公開の部屋の一覧を頼む（部屋に入っていなくてよい）。`spectate: true` なら観戦できる部屋の一覧 |
+| `join` `{ roomCode, name, token?, spectate? }` | 部屋に入る（token が参加者のものなら、その席に再接続する。観戦者のものなら観戦者として戻る）。`spectate: true` なら観戦者として入る |
 | `leave` | 部屋を出る |
 | `ping` `{ clientTime, version? }` | 接続の生存確認（期限のあるゲームでは、期限も確かめる）。`version`（端末が最後に受け取った部屋の版）より部屋が新しければ、今の `lobby` と `state` を送り直す |
 | `start` / `ready` `{ ready }` / `backToLobby` | 開始・再戦の準備・ロビーに戻る |
 | `setSettings` `{ settings }` / `addCpu` / `removeCpu` `{ seat }` | ロビーの操作（ホストだけ） |
-| `stamp` `{ stamp }` | スタンプを全員に送る（保存しない） |
+| `stamp` `{ stamp }` | スタンプを全員（観戦者も）に送る（保存しない） |
 | それ以外 | ゲームの定義の `actions`（対戦中の操作には `matchId` を付ける） |
 
 ### サーバー → 端末（`type`）
 
 | type | 内容 |
 | --- | --- |
-| `joined` | `{ roomCode, seat, token, playerId }` 部屋に入った（再接続の情報として保存する） |
-| `lobby` | `{ roomCode, status, public, matchId, hostSeat, rematch, settings, players, seat }` 部屋の状態。対戦中も、参加者が変わるたびに届く。`seat` は受け取る人の今の席 |
-| `state` | `{ matchId, view, cpu? }` 自分のビュー |
-| `rooms` | `{ rooms: [{ roomCode, hostName, players, maxPlayers, settings, createdAt }] }` 入れる公開の部屋の一覧（`listRooms` の返事） |
-| `error` | `{ message, code }`（`room_not_found`・`not_member`・`room_full`・`already_started`・`not_host`・`not_enough_players`・`cannot_start`・`rejected`・`busy`・`invalid`） |
-| `left` / `pong` `{ clientTime }` / `stamp` `{ seat, stamp }` | 退出した / ping の返事 / スタンプ |
+| `joined` | `{ roomCode, seat, token, playerId, spectator? }` 部屋に入った（再接続の情報として保存する）。観戦者は `seat: null`・`spectator: true` |
+| `lobby` | `{ roomCode, status, public, matchId, hostSeat, rematch, settings, players, spectators, seat, spectator? }` 部屋の状態。対戦中も、参加者・観戦者が変わるたびに届く。`seat` は受け取る人の今の席（観戦者は `null` で、`spectator: true`） |
+| `state` | `{ matchId, view, cpu? }` 自分のビュー（観戦者には `spectatorView` のビュー） |
+| `rooms` | `{ spectate, rooms: [{ roomCode, hostName, players, maxPlayers, settings, createdAt, spectators?, maxSpectators? }] }` 入れる公開の部屋の一覧（`listRooms` の返事）。観戦の一覧には `spectators`・`maxSpectators` が付く |
+| `error` | `{ message, code }`（`room_not_found`・`not_member`・`room_full`・`already_started`・`not_host`・`not_enough_players`・`cannot_start`・`rejected`・`busy`・`invalid`・`spectator`・`spectate_unavailable`・`spectators_full`） |
+| `left` / `pong` `{ clientTime }` / `stamp` `{ seat, stamp, spectator? }` | 退出した / ping の返事 / スタンプ（観戦者からは `seat: null` と `spectator: { id, name }`） |
 | それ以外 | ゲーム独自のメッセージ（`ctx.reply` などで送ったもの） |
 
 ### 届く順番
@@ -231,6 +265,9 @@ net.on('connection', (connected) => showConnection(connected));
 await net.createRoom(name);          // joinRoom(code, name) / resume()
 await net.createRoom(name, { public: true }); // 公開の部屋を作る
 const rooms = await net.listRooms(); // 入れる公開の部屋の一覧（入るときは enterRoom(rooms[0].roomCode, name)）
+await net.spectate(code, name);      // 観戦で入る（断られたら reject。enterRoom(code, name, { spectate: true }) と同じ）
+await net.listRooms({ spectate: true }); // 観戦できる部屋の一覧
+net.isSpectator();                   // 観戦中か（観戦者は net.seat が null）
 net.send('solved', { round: 1 });    // ゲームの操作（今の matchId を付けて送る）
 net.start(); net.ready(); net.backToLobby(); net.setSettings({ winsNeeded: 2 }); net.stamp('👍'); net.leave();
 net.serverNow();                     // サーバーの今の時刻（toLocalTime(serverTime) で端末の時刻に直す）
@@ -428,7 +465,7 @@ npm install
 # テスト
 npm test
 
-# 通し試験の例（ヘッドレス Chrome で2人分のページを動かす。公開の部屋の一覧から入る流れも確かめる）
+# 通し試験の例（ヘッドレス Chrome で2人分のページを動かす。公開の部屋の一覧から入る流れと、観戦も確かめる）
 node examples/e2e.mjs
 
 # ポートを変えるとき（画面・テスト用サーバー・Chrome のリモートデバッグ）
