@@ -242,7 +242,9 @@
             await this.ensureConnected();
             this.pendingName = name;
             const code = String(roomCode ?? '').trim();
-            const token = this.session?.roomCode === code ? this.session.token : undefined;
+            // 観戦で入るときは、観戦者として保存した token だけを使う（同じ端末の参加者の席を、観戦で取ってしまわないように）
+            const sameRoom = this.session?.roomCode === code && (!spectate || this.session.spectator === true);
+            const token = sameRoom ? this.session.token : undefined;
             return this.request({ action: 'join', roomCode: code, name, token, ...(spectate ? { spectate: true } : {}) });
         }
 

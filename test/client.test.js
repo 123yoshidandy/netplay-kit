@@ -5,6 +5,7 @@ import NetplayClient from '../client/netplay-client.mjs';
 import { startDevServer } from '../server/dev-server.js';
 import relayGame from '../examples/relay-game.js';
 import turnGame from '../examples/turn-game.js';
+import raceGame from '../examples/race-game.js';
 
 // 条件を満たすまで待つ
 async function waitFor(check, timeout = 2000) {
@@ -400,9 +401,26 @@ describe('NetplayClient の観戦', () => {
         [a, b, c].forEach(client => client.close());
     });
 
+    it('同じ端末に参加者として保存した参加情報があっても、観戦ではその席を取らない', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.spectate.seat.a' });
+        const b = new NetplayClient({ serverUrl: url, storageKey: 'test.spectate.seat.b' });
+        await a.createRoom('あお');
+        await waitFor(() => a.lobby);
+        await b.joinRoom(a.lobby.roomCode, 'みどり');
+        await waitFor(() => a.lobby.players.length === 2);
+        // 別のタブで、同じ参加情報を読み込んだ形
+        const tab = new NetplayClient({ serverUrl: url, storageKey: 'test.spectate.seat.tab' });
+        tab.session = { ...b.session };
+        await tab.spectate(a.lobby.roomCode, 'みどり');
+        await waitFor(() => tab.lobby && a.lobby.spectators.length === 1);
+        expect(tab.isSpectator()).toBe(true);
+        expect(a.lobby.players[1].connected).toBe(true);
+        [a, b, tab].forEach(client => client.close());
+    });
+
     it('観戦を有効にしていないゲームでは、spectate が spectate_unavailable で reject する', async () => {
         const port = 21987 + Math.floor(Math.random() * 1000);
-        const relay = startDevServer(relayGame, { port, log: () => {} });
+        const relay = startDevServer(raceGame, { port, log: () => {} });
         const a = new NetplayClient({ serverUrl: `ws://localhost:${port}`, storageKey: 'test.nospectate.a' });
         const c = new NetplayClient({ serverUrl: `ws://localhost:${port}`, storageKey: 'test.nospectate.c' });
         try {
