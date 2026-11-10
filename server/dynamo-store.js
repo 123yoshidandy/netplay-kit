@@ -55,20 +55,20 @@ export class DynamoStore {
         }
     }
 
-    // 公開の部屋で、ロビーで待っていて、期限を過ぎていないもの（一覧に要る項目だけを読む）
-    async listPublicRooms(nowSeconds = Math.floor(Date.now() / 1000)) {
+    // 公開の部屋で、status（ロビーで待っている 'lobby' か、観戦できる 'playing'）で、期限を過ぎていないもの（一覧に要る項目だけを読む）
+    async listPublicRooms(nowSeconds = Math.floor(Date.now() / 1000), { status = 'lobby' } = {}) {
         const rooms = [];
         let startKey;
         for (let page = 0; page < MAX_SCAN_PAGES; page++) {
             const { Items = [], LastEvaluatedKey } = await this.client.send(new ScanCommand({
                 TableName: this.tableName,
-                FilterExpression: 'begins_with(pk, :room) AND #isPublic = :true AND #status = :lobby AND #expiresAt > :now',
-                ProjectionExpression: '#code, #isPublic, #status, #expiresAt, #createdAt, #players, #settings',
+                FilterExpression: 'begins_with(pk, :room) AND #isPublic = :true AND #status = :status AND #expiresAt > :now',
+                ProjectionExpression: '#code, #isPublic, #status, #expiresAt, #createdAt, #players, #settings, #spectators',
                 ExpressionAttributeNames: {
                     '#code': 'code', '#isPublic': 'isPublic', '#status': 'status', '#expiresAt': 'expiresAt',
-                    '#createdAt': 'createdAt', '#players': 'players', '#settings': 'settings'
+                    '#createdAt': 'createdAt', '#players': 'players', '#settings': 'settings', '#spectators': 'spectators'
                 },
-                ExpressionAttributeValues: { ':room': 'ROOM#', ':true': true, ':lobby': 'lobby', ':now': nowSeconds },
+                ExpressionAttributeValues: { ':room': 'ROOM#', ':true': true, ':status': status, ':now': nowSeconds },
                 ExclusiveStartKey: startKey
             }));
             rooms.push(...Items);

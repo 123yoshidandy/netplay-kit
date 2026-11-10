@@ -89,6 +89,18 @@ export function runCpuStep(game) {
     return game.applyCommand(game.current, { type: 'add', amount: Math.min(3, amount) });
 }
 
+// みんなに見えている情報（参加者と観戦者に共通）
+function publicView(game, since) {
+    return {
+        total: game.total,
+        current: game.current,
+        loser: game.loser,
+        players: game.players.map(({ name, proxy }) => ({ name, proxy })),
+        logsFrom: since ?? 0,
+        logs: game.logs.slice(since ?? 0)
+    };
+}
+
 // ===== ゲームの定義（netplay の部屋に差し込むもの） =====
 
 export default {
@@ -130,17 +142,12 @@ export default {
     joinMark: (game) => Math.max(0, game.logs.length - 20),
 
     view(game, seat, { since }) {
-        return {
-            total: game.total,
-            current: game.current,
-            isMyTurn: !game.isOver && game.current === seat,
-            loser: game.loser,
-            secret: game.players[seat].secret,
-            players: game.players.map(({ name, proxy }) => ({ name, proxy })),
-            logsFrom: since ?? 0,
-            logs: game.logs.slice(since ?? 0)
-        };
+        return { ...publicView(game, since), isMyTurn: !game.isOver && game.current === seat, secret: game.players[seat].secret };
     },
+
+    // 観戦：誰の席でもないビュー（ひみつの数は誰のものも入れない）。観戦者は5人まで
+    maxSpectators: 5,
+    spectatorView: (game, { since }) => publicView(game, since),
 
     actions: {
         command({ game, seat, message, reject, now }) {

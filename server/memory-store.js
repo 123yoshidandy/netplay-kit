@@ -32,11 +32,11 @@ export class MemoryStore {
         this.rooms.set(room.code, clone(room));
     }
 
-    // 公開の部屋で、ロビーで待っていて、期限を過ぎていないもの
-    async listPublicRooms(nowSeconds = Math.floor(Date.now() / 1000)) {
+    // 公開の部屋で、status（ロビーで待っている 'lobby' か、観戦できる 'playing'）で、期限を過ぎていないもの
+    async listPublicRooms(nowSeconds = Math.floor(Date.now() / 1000), { status = 'lobby' } = {}) {
         this.reads++;
         return [...this.rooms.values()]
-            .filter(room => room.isPublic && room.status === 'lobby' && room.expiresAt > nowSeconds)
+            .filter(room => room.isPublic && room.status === status && room.expiresAt > nowSeconds)
             .map(clone);
     }
 

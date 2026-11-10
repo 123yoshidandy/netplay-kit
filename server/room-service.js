@@ -2,7 +2,7 @@
  * オンライン対戦の部屋の処理（ゲームに共通の部分）
  * 保存先（store）と送信（send）は外から渡すので、AWS でも手元のテスト用サーバーでも同じ処理を使える
  *
- * 部屋の作成・参加・再接続・退出・ホストの引き継ぎ・開始・再戦・CPU・スタンプ・ping はここで扱い、
+ * 部屋の作成・参加・再接続・退出・ホストの引き継ぎ・開始・再戦・CPU・スタンプ・観戦・ping はここで扱い、
  * ゲームの中身は「ゲームの定義」（game）として外から差し込む。ここからゲームのコードは import しない
  */
 
@@ -16,6 +16,7 @@ const DEFAULTS = {
     maxNameLength: 12,
     roomTtlSeconds: 2 * 24 * 60 * 60, // 部屋は最後の操作から2日で消える
     maxCpuSteps: 1000,           // CPU が止まらなくなったときの安全装置
+    maxSpectators: 0,            // 観戦者の上限（つながっている人の数）。0 なら観戦できない
     maxMessageLength: 8192,      // 端末から受け付けるメッセージの大きさの上限（JSON の文字数）
     messagesPerSecond: 10,       // 1接続あたりの送信回数の上限（Lambda のメモリで数えるので目安）
     messagesBurst: 20
@@ -26,6 +27,8 @@ const MAX_RETRIES = 3;              // 同時に操作されて保存がぶつ�
 const MAX_CODE_ATTEMPTS = 10;       // 部屋番号が使用中の部屋とぶつかったときに作り直す回数
 const CONNECTION_CACHE_SIZE = 1000;
 const PUBLIC_ROOMS_LIMIT = 20;      // 公開の部屋の一覧に載せる数（新しく作られた順）
+// 観戦者ができる操作（ほかは code: 'spectator' で断る）
+const SPECTATOR_ACTIONS = ['ping', 'leave', 'stamp'];
 
 // 共通側が受け付ける操作（ゲームの定義の actions に同じ名前は使えない）
 export const RESERVED_ACTIONS = ['create', 'join', 'leave', 'ping', 'start', 'ready', 'backToLobby',
@@ -78,7 +81,7 @@ export class RateLimiter {
 
 export class RoomService {
     // game: ゲームの定義（README の「ゲームの定義」）
-    // store: getRoom(code) / putRoom(room, previousVersion) / listPublicRooms(nowSeconds) / getConnection(id) / putConnection(connection) / deleteConnection(id)
+    // store: getRoom(code) / putRoom(room, previousVersion) / listPublicRooms(nowSeconds, { status }) / getConnection(id) / putConnection(connection) / deleteConnection(id)
     // send: (connectionId, message) => Promise（接続が切れていれば失敗してよい）
     // connectionCache / limiter: Lambda の呼び出しをまたいで使い回すもの（省略するとこのインスタンスだけで持つ）
     constructor({ game, store, send, createToken = () => crypto.randomUUID(), now = () => Date.now(), random = Math.random,
@@ -143,11 +146,14 @@ export class RoomService {
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
             const room = await this.loadRoom(connection.roomCode);
             const seat = room ? this.seatOf(room, connectionId) : -1;
-            if (seat < 0) return;
+            const spectator = room && seat < 0 ? this.spectatorOf(room, connectionId) : null;
+            if (seat < 0 && !spectator) return;
             const lobbyBefore = this.lobbyKey(room);
-            room.players[seat].connectionId = null;
+            // 観戦者も、token で戻れるように一覧に残す（上限に数えるのは、つながっている人だけ）
+            if (spectator) spectator.connectionId = null;
+            else room.players[seat].connectionId = null;
             const outbox = [];
-            if (room.status === 'playing') {
+            if (seat >= 0 && room.status === 'playing') {
                 outbox.push(...this.runHook(room, seat, {}, ctx => this.game.onPlayerGone?.(ctx, { seat, reason: 'disconnected' })));
             }
             try {
@@ -164,7 +170,7 @@ export class RoomService {
         switch (message.action) {
             case 'create': return this.createRoom(connectionId, message);
             case 'join': return this.joinRoom(connectionId, message);
-            case 'listRooms': return this.listPublicRooms(connectionId);
+            case 'listRooms': return this.listPublicRooms(connectionId, { spectate: message.spectate === true });
             case 'ping':
                 // 期限を使わないゲームで、端末の版が付いていなければ、部屋を読まずに返す（接続を保つための ping で読み込みを増やさない）
                 if (!this.game.deadline && !Number.isFinite(message.version)) return [this.pong(connectionId, message)];
@@ -172,10 +178,22 @@ export class RoomService {
         }
 
         // ここから先は部屋に入っている端末だけ
-        const { room, seat } = await this.loadMember(connectionId, { quiet: message.action === 'ping' });
+        const { room, seat, spectator } = await this.loadMember(connectionId, { quiet: message.action === 'ping' });
         if (!room) return [this.pong(connectionId, message)];
+        if (spectator && !SPECTATOR_ACTIONS.includes(message.action)) throw new GameError('観戦中は操作できません', 'spectator');
         const lobbyBefore = this.lobbyKey(room);
         const deadline = this.checkDeadline(room);
+
+        if (spectator) {
+            let outbox;
+            switch (message.action) {
+                case 'ping': outbox = [this.pong(connectionId, message), ...this.spectatorResyncMessages(room, spectator, message.version)]; break;
+                case 'leave': return this.withVersion(room, [...deadline.outbox, ...await this.leaveAsSpectator(room, spectator, connectionId, lobbyBefore)]);
+                default: outbox = this.stamp(room, { spectator }, message.stamp); break;
+            }
+            if (deadline.save) await this.saveRoom(room);
+            return this.withVersion(room, this.withLobby(room, lobbyBefore, [...deadline.outbox, ...outbox]));
+        }
 
         let outbox;
         switch (message.action) {
@@ -187,7 +205,7 @@ export class RoomService {
             case 'setSettings': outbox = this.setSettings(room, seat, message.settings); break;
             case 'addCpu': outbox = this.addCpu(room, seat); break;
             case 'removeCpu': outbox = this.removeCpu(room, seat, message.seat); break;
-            case 'stamp': outbox = this.stamp(room, seat, message.stamp); break;
+            case 'stamp': outbox = this.stamp(room, { seat }, message.stamp); break;
             default: outbox = this.gameAction(room, seat, message); break;
         }
 
@@ -209,6 +227,7 @@ export class RoomService {
             matchId: 0,      // 対戦ごとに増える番号（前の対戦のメッセージが混ざらないように）
             settings: this.game.settings?.defaults?.() ?? {},
             players: [this.newPlayer(name, connectionId)],
+            spectators: [],  // 観戦者（席を持たず、操作も送れない。人数の上限に数えない）
             game: null,
             carry: null      // 対戦をまたいで残すもの（通算の勝ち数など。ゲームの carryOver が決める）
         };
@@ -228,13 +247,16 @@ export class RoomService {
     }
 
     // 部屋に参加する。token が参加者のものなら、その席に再接続する（対戦中でも戻れる。退出した人は戻れない）
+    // spectate: true なら観戦者として入る（対戦中でも入れる）。token が観戦者のものなら、観戦者として戻る
     // 再接続したら joined → lobby → state の順で送る
-    async joinRoom(connectionId, { roomCode, name, token }) {
+    async joinRoom(connectionId, { roomCode, name, token, spectate }) {
         const room = await this.loadRoom(String(roomCode ?? '').trim());
         if (!room) throw new GameError('部屋が見つかりません', 'room_not_found');
         const lobbyBefore = this.lobbyKey(room);
 
         let seat = token ? room.players.findIndex(player => player.token === token && !player.left) : -1;
+        const watcher = seat < 0 && token ? this.spectatorsOf(room).find(spectator => spectator.token === token) : null;
+        if (watcher || (seat < 0 && spectate === true)) return this.joinAsSpectator(room, connectionId, { name, watcher, lobbyBefore });
         const outbox = [];
         if (seat >= 0) {
             room.players[seat].connectionId = connectionId;
@@ -261,6 +283,49 @@ export class RoomService {
         const others = this.withLobby(room, lobbyBefore, outbox)
             .filter(entry => entry.connectionId !== connectionId);
         return this.withVersion(room, [...messages, ...others]);
+    }
+
+    // 観戦者として入る（watcher があれば、その人として戻る）
+    // 上限に数えるのはつながっている観戦者だけ。満ちていたら、切れたままの観戦者を古い順に外して空ける
+    async joinAsSpectator(room, connectionId, { name, watcher, lobbyBefore }) {
+        if (!this.game.maxSpectators) throw new GameError('この部屋は観戦できません', 'spectate_unavailable');
+        room.spectators = this.spectatorsOf(room);
+        let spectator = watcher;
+        if (spectator) {
+            spectator.connectionId = connectionId;
+        } else {
+            while (room.spectators.length >= this.game.maxSpectators) {
+                const gone = room.spectators.findIndex(entry => !entry.connectionId);
+                if (gone < 0) throw new GameError('観戦できる人数がいっぱいです', 'spectators_full');
+                room.spectators.splice(gone, 1);
+            }
+            spectator = this.newSpectator(name, connectionId);
+            room.spectators.push(spectator);
+        }
+
+        await this.saveRoom(room);
+        await this.putConnection(connectionId, room.code);
+
+        // 途中から入っても、再接続と同じく joined → lobby → 今の state（観戦者用のビュー）の順で届く
+        const messages = [this.spectatorJoinedMessage(room, spectator), this.spectatorLobbyMessage(room, spectator)];
+        if (room.status !== 'lobby' && room.game && this.game.spectatorView) {
+            const game = this.restoreGame(room);
+            messages.push(this.spectatorStateMessage(room, game, spectator, this.game.joinMark ? this.game.joinMark(game) : null));
+        }
+        const others = this.lobbyMessagesIfChanged(room, lobbyBefore).filter(entry => entry.connectionId !== connectionId);
+        return this.withVersion(room, [...messages, ...others]);
+    }
+
+    // 観戦をやめる（一覧から外す）
+    async leaveAsSpectator(room, spectator, connectionId, lobbyBefore) {
+        room.spectators = this.spectatorsOf(room).filter(entry => entry !== spectator);
+        await this.saveRoom(room);
+        await this.store.deleteConnection(connectionId);
+        this.connectionCache.delete(connectionId);
+        return [
+            { connectionId, message: { type: 'left' } },
+            ...this.lobbyMessagesIfChanged(room, lobbyBefore).filter(entry => entry.connectionId !== connectionId)
+        ];
     }
 
     // 部屋を出る。ロビーでは席から外し（後ろの人の席が詰まる）、対戦中・対戦後は「退出」として席を残す
@@ -291,11 +356,15 @@ export class RoomService {
 
     // 入れる公開の部屋の一覧を返す（部屋に入っていなくてよい）
     // 載せるのは、ロビーで待っていて、満員でなく、つながっている人がいる部屋だけ。token などは載せない
-    async listPublicRooms(connectionId) {
+    // spectate: true なら、観戦できる部屋（対戦中で、観戦の枠が空いている部屋）の一覧にする
+    async listPublicRooms(connectionId, { spectate = false } = {}) {
         const nowSeconds = Math.floor(this.now() / 1000);
-        const rooms = (await this.store.listPublicRooms(nowSeconds))
-            .filter(room => room.isPublic && room.status === 'lobby' && room.expiresAt > nowSeconds)
-            .filter(room => this.activePlayers(room).length < this.game.maxPlayers)
+        if (spectate && !this.game.maxSpectators) return [{ connectionId, message: { type: 'rooms', spectate, rooms: [] } }];
+        const status = spectate ? 'playing' : 'lobby';
+        const watching = (room) => this.spectatorsOf(room).filter(spectator => spectator.connectionId).length;
+        const rooms = (await this.store.listPublicRooms(nowSeconds, { status }))
+            .filter(room => room.isPublic && room.status === status && room.expiresAt > nowSeconds)
+            .filter(room => spectate ? watching(room) < this.game.maxSpectators : this.activePlayers(room).length < this.game.maxPlayers)
             .filter(room => room.players.some(player => !player.isCPU && player.connectionId))
             .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
             .slice(0, PUBLIC_ROOMS_LIMIT)
@@ -305,9 +374,10 @@ export class RoomService {
                 players: this.activePlayers(room).length,
                 maxPlayers: this.game.maxPlayers,
                 settings: this.game.settings?.forLobby ? this.game.settings.forLobby(room.settings) : room.settings,
-                createdAt: room.createdAt ?? null
+                createdAt: room.createdAt ?? null,
+                ...(spectate ? { spectators: watching(room), maxSpectators: this.game.maxSpectators } : {})
             }));
-        return [{ connectionId, message: { type: 'rooms', rooms } }];
+        return [{ connectionId, message: { type: 'rooms', spectate, rooms } }];
     }
 
     // ===== ロビー・開始・再戦 =====
@@ -401,10 +471,13 @@ export class RoomService {
         return withSave([]);
     }
 
-    // スタンプ（短い定型の反応）を全員に送る。保存しない
-    stamp(room, seat, stamp) {
+    // スタンプ（短い定型の反応）を全員（観戦者も）に送る。保存しない
+    // 観戦者が送ったものは seat: null と、観戦者の id・名前を付ける
+    stamp(room, { seat = null, spectator = null }, stamp) {
         if (!this.game.stamps.includes(stamp)) return withoutSave([]);
-        return withoutSave(this.toConnected(room, () => ({ type: 'stamp', seat, stamp })));
+        const from = spectator ? { seat: null, spectator: { id: spectator.id, name: spectator.name } } : { seat };
+        const message = { type: 'stamp', ...from, stamp };
+        return withoutSave([...this.toConnected(room, () => message), ...this.toSpectators(room, message)]);
     }
 
     // ===== ゲームの操作 =====
@@ -547,14 +620,30 @@ export class RoomService {
         };
     }
 
+    spectatorJoinedMessage(room, spectator) {
+        return {
+            connectionId: spectator.connectionId,
+            message: { type: 'joined', roomCode: room.code, seat: null, spectator: true, token: spectator.token, playerId: spectator.id }
+        };
+    }
+
     // 部屋の状態（参加者・接続状況・ホスト・設定）。対戦中も、参加者の状態が変わるたびに全員へ送る
-    // 席番号は詰まることがあるので、受け取る人の今の席番号を添える
+    // 席番号は詰まることがあるので、受け取る人の今の席番号を添える。観戦者には seat: null・spectator: true
     lobbyMessages(room) {
         const lobby = this.lobbyState(room);
-        return room.players
-            .map((player, seat) => ({ player, seat }))
-            .filter(({ player }) => player.connectionId)
-            .map(({ player, seat }) => ({ connectionId: player.connectionId, message: { ...lobby, seat } }));
+        return [
+            ...room.players
+                .map((player, seat) => ({ player, seat }))
+                .filter(({ player }) => player.connectionId)
+                .map(({ player, seat }) => ({ connectionId: player.connectionId, message: { ...lobby, seat } })),
+            ...this.spectatorsOf(room)
+                .filter(spectator => spectator.connectionId)
+                .map(spectator => ({ connectionId: spectator.connectionId, message: { ...lobby, seat: null, spectator: true } }))
+        ];
+    }
+
+    spectatorLobbyMessage(room, spectator) {
+        return { connectionId: spectator.connectionId, message: { ...this.lobbyState(room), seat: null, spectator: true } };
     }
 
     lobbyState(room) {
@@ -575,6 +664,11 @@ export class RoomService {
                 connected: Boolean(player.isCPU || player.connectionId),
                 left: Boolean(player.left),
                 ready: Boolean(player.ready)
+            })),
+            spectators: this.spectatorsOf(room).map(spectator => ({
+                id: spectator.id,
+                name: spectator.name,
+                connected: Boolean(spectator.connectionId)
             }))
         };
     }
@@ -605,12 +699,32 @@ export class RoomService {
         };
     }
 
+    // 観戦者用のビュー（ゲームの定義の spectatorView。公開の情報だけ）
+    spectatorStateMessage(room, game, spectator, since, extra = {}, view = null) {
+        return {
+            connectionId: spectator.connectionId,
+            message: { type: 'state', matchId: room.matchId, view: view ?? this.game.spectatorView(game, { since, room: this.lobbyState(room) }), ...extra }
+        };
+    }
+
     // 今のゲームの状態を、接続している人間それぞれのビューにして残す
+    // 観戦者には、spectatorView があれば観戦者用のビューを送る（観戦者が何人いても、作るのは1回）
     snapshot(room, game, since, extra = {}) {
-        return room.players
+        const states = room.players
             .map((player, seat) => ({ player, seat }))
             .filter(({ player }) => player.connectionId)
             .map(({ seat }) => this.stateMessage(room, game, seat, since, extra));
+        const watching = this.spectatorsOf(room).filter(spectator => spectator.connectionId);
+        if (watching.length === 0 || !this.game.spectatorView) return states;
+        const view = this.game.spectatorView(game, { since, room: this.lobbyState(room) });
+        return [...states, ...watching.map(spectator => this.spectatorStateMessage(room, game, spectator, since, extra, view))];
+    }
+
+    // 接続している観戦者に同じメッセージを送る
+    toSpectators(room, message) {
+        return this.spectatorsOf(room)
+            .filter(spectator => spectator.connectionId)
+            .map(spectator => ({ connectionId: spectator.connectionId, message }));
     }
 
     toConnected(room, createMessage) {
@@ -632,6 +746,17 @@ export class RoomService {
         return messages;
     }
 
+    // 観戦者の取りこぼしの立て直し（参加者の resyncMessages と同じ）
+    spectatorResyncMessages(room, spectator, version) {
+        if (!Number.isFinite(version) || room.version <= version) return [];
+        const messages = [this.spectatorLobbyMessage(room, spectator)];
+        if (room.status !== 'lobby' && room.game && this.game.spectatorView) {
+            const game = this.restoreGame(room);
+            messages.push(this.spectatorStateMessage(room, game, spectator, this.game.joinMark ? this.game.joinMark(game) : null));
+        }
+        return messages;
+    }
+
     pong(connectionId, { clientTime }) {
         return { connectionId, message: { type: 'pong', clientTime: Number.isFinite(clientTime) ? clientTime : null } };
     }
@@ -639,24 +764,30 @@ export class RoomService {
     // ===== 補助 =====
 
     // 接続から部屋と席を求める。席は接続の記録に持たず、部屋の players から connectionId で探す（席が詰まってもずれない）
+    // 観戦者なら seat: null と spectator（部屋の spectators の要素）を返す
     // 接続→部屋番号の対応はメモリに置き、部屋は毎回読む（中継のたびの読み込みを1回にするため）
     async loadMember(connectionId, { quiet = false } = {}) {
+        const member = (room) => {
+            if (!room) return null;
+            const seat = this.seatOf(room, connectionId);
+            if (seat >= 0) return { room, seat, spectator: null };
+            const spectator = this.spectatorOf(room, connectionId);
+            return spectator ? { room, seat: null, spectator } : null;
+        };
         const cachedCode = this.connectionCache.get(connectionId);
         if (cachedCode) {
-            const room = await this.loadRoom(cachedCode);
-            const seat = room ? this.seatOf(room, connectionId) : -1;
-            if (seat >= 0) return { room, seat };
+            const found = member(await this.loadRoom(cachedCode));
+            if (found) return found;
             this.connectionCache.delete(connectionId);
         }
         const connection = await this.store.getConnection(connectionId);
-        const room = connection ? await this.loadRoom(connection.roomCode) : null;
-        const seat = room ? this.seatOf(room, connectionId) : -1;
-        if (seat < 0) {
-            if (quiet) return { room: null, seat: -1 };
+        const found = member(connection ? await this.loadRoom(connection.roomCode) : null);
+        if (!found) {
+            if (quiet) return { room: null, seat: -1, spectator: null };
             throw new GameError('部屋に入っていません', 'not_member');
         }
-        this.rememberConnection(connectionId, room.code);
-        return { room, seat };
+        this.rememberConnection(connectionId, found.room.code);
+        return found;
     }
 
     rememberConnection(connectionId, roomCode) {
@@ -677,6 +808,15 @@ export class RoomService {
 
     seatOf(room, connectionId) {
         return room.players.findIndex(player => player.connectionId === connectionId);
+    }
+
+    // 観戦者の一覧（観戦を入れる前に作られた部屋には spectators がない）
+    spectatorsOf(room) {
+        return room.spectators ?? [];
+    }
+
+    spectatorOf(room, connectionId) {
+        return this.spectatorsOf(room).find(spectator => spectator.connectionId === connectionId) ?? null;
     }
 
     // 部屋を作った人の役：退出していない最初の人間（接続中の人を優先）。席0が抜けても次の人が引き継ぐ
@@ -713,6 +853,11 @@ export class RoomService {
         return { id: this.createPlayerId(), name: trimmed || 'プレイヤー', isCPU: false, token: this.createToken(), connectionId };
     }
 
+    newSpectator(name, connectionId) {
+        const trimmed = String(name ?? '').trim().slice(0, this.game.maxNameLength);
+        return { id: this.createPlayerId(), name: trimmed || '観戦者', token: this.createToken(), connectionId };
+    }
+
     // 参加者を見分ける番号（token と違って、ほかの人に見せてよい）
     createPlayerId() {
         return Math.floor(this.random() * 2 ** 32).toString(36);
@@ -741,7 +886,7 @@ class GameContext {
         this.stateSuppressed = false;
         this.liveGame = undefined;
         // ({ game, reject, now }) => ... のように取り出しても使えるようにする
-        ['now', 'random', 'isConnected', 'opponents', 'reply', 'toSeat', 'broadcast', 'reject', 'ignore', 'noState', 'endMatch']
+        ['now', 'random', 'isConnected', 'opponents', 'reply', 'toSeat', 'toSpectators', 'broadcast', 'reject', 'ignore', 'noState', 'endMatch']
             .forEach(name => { this[name] = this[name].bind(this); });
     }
 
@@ -786,10 +931,17 @@ class GameContext {
         if (connectionId) this.outbox.push({ connectionId, message });
     }
 
-    broadcast(message, { except = null } = {}) {
+    // 観戦者にも届けるなら { spectators: true }
+    broadcast(message, { except = null, spectators = false } = {}) {
         this.room.players.forEach((player, seat) => {
             if (seat !== except) this.toSeat(seat, message);
         });
+        if (spectators) this.toSpectators(message);
+    }
+
+    // つながっている観戦者に、ゲーム独自のメッセージを送る（中継型で、フィールドの様子を観戦者にも見せるときなど）
+    toSpectators(message) {
+        this.outbox.push(...this.service.toSpectators(this.room, message));
     }
 
     // 操作を断る：理由（画面に出す）と一緒に、今の状態を本人に返す

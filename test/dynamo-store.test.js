@@ -36,11 +36,17 @@ describe('DynamoStore の公開の部屋の一覧', () => {
         const [{ name, input }] = client.sent;
         expect(name).toBe('Scan');
         expect(input.TableName).toBe('rooms');
-        expect(input.FilterExpression).toBe('begins_with(pk, :room) AND #isPublic = :true AND #status = :lobby AND #expiresAt > :now');
-        expect(input.ExpressionAttributeValues).toEqual({ ':room': 'ROOM#', ':true': true, ':lobby': 'lobby', ':now': 1000 });
+        expect(input.FilterExpression).toBe('begins_with(pk, :room) AND #isPublic = :true AND #status = :status AND #expiresAt > :now');
+        expect(input.ExpressionAttributeValues).toEqual({ ':room': 'ROOM#', ':true': true, ':status': 'lobby', ':now': 1000 });
         expect(Object.values(input.ExpressionAttributeNames).sort())
-            .toEqual(['code', 'createdAt', 'expiresAt', 'isPublic', 'players', 'settings', 'status']);
+            .toEqual(['code', 'createdAt', 'expiresAt', 'isPublic', 'players', 'settings', 'spectators', 'status']);
         expect(input.ExclusiveStartKey).toBeUndefined();
+    });
+
+    it('観戦の一覧では、対戦中（playing）の部屋で絞る', async () => {
+        const client = fakeClient([{ Items: [] }]);
+        await new DynamoStore('rooms', client).listPublicRooms(1000, { status: 'playing' });
+        expect(client.sent[0].input.ExpressionAttributeValues[':status']).toBe('playing');
     });
 
     it('続きのページがあれば、続きから読んでつなげる', async () => {
