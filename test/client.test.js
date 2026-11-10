@@ -348,3 +348,72 @@ describe('NetplayClient の公開の部屋', () => {
         b.close();
     });
 });
+
+describe('NetplayClient の観戦', () => {
+    let dev;
+    let url;
+
+    beforeAll(() => {
+        const port = 20787 + Math.floor(Math.random() * 1000);
+        dev = startDevServer(turnGame, { port, log: () => {} });
+        url = `ws://localhost:${port}`;
+    });
+    afterAll(() => dev.close());
+
+    it('観戦できる部屋の一覧から観戦で入り、観戦者用のビューを受け取る。操作は断られ、切れても観戦者として戻る', async () => {
+        const a = new NetplayClient({ serverUrl: url, storageKey: 'test.spectate.a' });
+        const b = new NetplayClient({ serverUrl: url, storageKey: 'test.spectate.b' });
+        const c = new NetplayClient({ serverUrl: url, storageKey: 'test.spectate.c', reconnectDelayMs: 50 });
+        await a.createRoom('あお', { public: true });
+        await waitFor(() => a.lobby);
+        await b.joinRoom(a.lobby.roomCode, 'みどり');
+        await waitFor(() => a.lobby.players.length === 2);
+        // 始まる前は、観戦の一覧に載らない（参加者の募集の一覧には載る）
+        expect(await c.listRooms({ spectate: true })).toEqual([]);
+        expect((await c.listRooms()).map(room => room.hostName)).toEqual(['あお']);
+        a.start();
+        await waitFor(() => a.lobby.status === 'playing');
+
+        const rooms = await c.listRooms({ spectate: true });
+        expect(rooms.map(room => [room.hostName, room.players, room.spectators])).toEqual([['あお', 2, 0]]);
+        const states = record(c, ['state']);
+        await c.spectate(rooms[0].roomCode, 'あか');
+        await waitFor(() => c.lobby && states.length > 0);
+        expect(c.isSpectator()).toBe(true);
+        expect(c.seat).toBeNull();
+        expect(c.isHost()).toBe(false);
+        expect(c.session.spectator).toBe(true);
+        expect(states[0].message.view.secret).toBeUndefined();
+        await waitFor(() => a.lobby.spectators.length === 1);
+        expect(a.isSpectator()).toBe(false);
+
+        const error = new Promise(resolve => c.on('error', resolve));
+        c.send('command', { command: { type: 'add', amount: 1 } });
+        expect((await error).code).toBe('spectator');
+
+        // 接続が切れても、保存した token で観戦者として戻る
+        c.socket.close();
+        await waitFor(() => !c.isOpen());
+        await waitFor(() => c.isOpen() && a.lobby.spectators[0]?.connected === true, 3000);
+        expect(c.isSpectator()).toBe(true);
+
+        [a, b, c].forEach(client => client.close());
+    });
+
+    it('観戦を有効にしていないゲームでは、spectate が spectate_unavailable で reject する', async () => {
+        const port = 21987 + Math.floor(Math.random() * 1000);
+        const relay = startDevServer(relayGame, { port, log: () => {} });
+        const a = new NetplayClient({ serverUrl: `ws://localhost:${port}`, storageKey: 'test.nospectate.a' });
+        const c = new NetplayClient({ serverUrl: `ws://localhost:${port}`, storageKey: 'test.nospectate.c' });
+        try {
+            await a.createRoom('あお');
+            await waitFor(() => a.lobby);
+            await expect(c.spectate(a.lobby.roomCode, 'あか')).rejects.toMatchObject({ code: 'spectate_unavailable', fromServer: true });
+            expect(c.isInRoom()).toBe(false);
+        } finally {
+            a.close();
+            c.close();
+            relay.close();
+        }
+    });
+});
