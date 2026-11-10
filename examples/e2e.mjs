@@ -97,6 +97,23 @@ try {
     await e.eval(`document.getElementById('find').click(); true`);
     await e.waitFor(`document.getElementById('rooms').textContent === '待っている部屋はありません'`);
     check.ok('始まった公開の部屋は、一覧から消える', true);
+
+    // 観戦：対戦中の公開の部屋を、観戦できる部屋の一覧から開く
+    await e.eval(`document.getElementById('name').value = 'みる'; document.getElementById('find-watch').click(); true`);
+    await e.waitFor(`document.querySelectorAll('#rooms button').length > 0`);
+    check.ok('E: 観戦できる部屋の一覧に、始まった公開の部屋が出る', await e.eval(roomList) === 'きの部屋を観戦（観戦0/3人）', await e.eval(roomList));
+    await e.eval(`document.querySelector('#rooms button').click(); true`);
+    await e.waitFor(`net.isSpectator() && ${has('state')}`);
+    check.ok('E: 観戦で入ると席を持たず、対戦のビュー（同じシード）が届く',
+        await e.eval(`net.seat === null && received.find(m => m.type === 'state').view.seed`) === await c.eval(`received.find(m => m.type === 'state').view.seed`));
+    await c.waitFor(`net.lobby.spectators.length === 1`);
+    check.ok('C: 参加者には観戦者が見え、人数は変わらない', await c.eval(`net.lobby.players.length === 2 && net.lobby.spectators[0].name === 'みる'`));
+    await c.eval(`document.getElementById('attack').click(); true`);
+    await e.waitFor(has('relay'));
+    check.ok('E: 中継が観戦者にも届く', true);
+    await e.eval(`document.getElementById('attack').click(); true`);
+    await e.waitFor(`received.some(m => m.type === 'error' && m.code === 'spectator')`);
+    check.ok('E: 観戦者の操作は断られ、相手には届かない', !(await c.eval(has('relay'))));
 } finally {
     check.report();
     await chrome.close();

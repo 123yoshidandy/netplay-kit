@@ -157,6 +157,19 @@ describe('サンプル②：中継の型', () => {
         expect(server.store.reads - reads).toBe(1);
     });
 
+    it('観戦者には、シード・勝ち数のビューと、両方の中継が届く（観戦者の操作は断る）', async () => {
+        const { server, a, b, matchId } = await startRelay();
+        const watcher = server.connect();
+        await watcher.send('join', { roomCode: a.last('joined').roomCode, name: 'C', spectate: true });
+        expect(watcher.last('state').view.seed).toBe(a.last('state').view.seed);
+        await a.send('relay', { kind: 'snapshot', data: { rows: 1 }, matchId });
+        await b.send('relay', { kind: 'attack', data: { lines: 2 }, matchId });
+        expect(watcher.all('relay').map(m => [m.from, m.kind])).toEqual([[0, 'snapshot'], [1, 'attack']]);
+        await watcher.send('relay', { kind: 'attack', data: {}, matchId });
+        expect(watcher.last('error').code).toBe('spectator');
+        expect(a.all('relay')).toHaveLength(1);
+    });
+
     it('前の対戦・対戦の後・知らない種類・大きすぎる中継は、エラーを出さずに捨てる', async () => {
         const { a, b, matchId } = await startRelay();
         await a.send('relay', { kind: 'attack', data: {}, matchId: matchId - 1 });

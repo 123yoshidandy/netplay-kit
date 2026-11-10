@@ -205,6 +205,7 @@ describe('観戦', () => {
         const game = {
             ...relayGame,
             maxSpectators: 2,
+            spectatorView: undefined,
             actions: {
                 ...relayGame.actions,
                 relay: {

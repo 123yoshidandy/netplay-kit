@@ -3,6 +3,7 @@
  *
  * ゲームはそれぞれの端末で進め、サーバーは同じシードを配り、攻撃・フィールドの様子を相手に中継する
  * 中継は保存しない（readOnly）。負けは端末が申告する。通算の勝ち数は対戦をまたいで残す（carryOver）
+ * 観戦：中継を観戦者にも届ける（toSpectators）。サーバーに盤面はないので、観戦者は中継された様子から描く
  */
 
 export const RELAY_KINDS = ['attack', 'snapshot'];
@@ -15,6 +16,7 @@ export default {
     stamps: ['👍', '🔥', '🙏'],
     messagesPerSecond: 25,       // 1人あたり毎秒5回ほどフィールドの様子を送るので多めにする
     messagesBurst: 50,
+    maxSpectators: 3,            // 観戦者1人ごとに、中継の送信が増える（毎秒5回ほど）ので少なめにする
 
     create: ({ players, random, carry }) => ({
         seed: Math.floor(random() * 2 ** 32),
@@ -24,15 +26,19 @@ export default {
     }),
 
     view: (game) => ({ seed: game.seed, loser: game.loser, wins: game.wins }),
+    // 隠す情報がないので、観戦者にも同じものを送る
+    spectatorView: (game) => ({ seed: game.seed, loser: game.loser, wins: game.wins }),
 
     actions: {
         // 攻撃・フィールドの様子を相手に送る。前の対戦（matchId 違い）や対戦の後に届いたものは共通側が捨てる
         relay: {
             readOnly: true,
-            handle({ message, opponents, toSeat, seat }) {
+            handle({ message, opponents, toSeat, toSpectators, seat }) {
                 if (!RELAY_KINDS.includes(message.kind)) return;
                 if (JSON.stringify(message.data ?? null).length > MAX_RELAY_LENGTH) return;
-                opponents().forEach(opponent => toSeat(opponent, { type: 'relay', kind: message.kind, data: message.data, from: seat }));
+                const relay = { type: 'relay', kind: message.kind, data: message.data, from: seat };
+                opponents().forEach(opponent => toSeat(opponent, relay));
+                toSpectators(relay);
             }
         },
 
