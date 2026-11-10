@@ -14,14 +14,17 @@
     <!-- 通し試験（examples/e2e.mjs）用の最小の画面。サンプル②（中継）の部屋を操作する -->
     <input id="name" placeholder="名前">
     <input id="code" placeholder="部屋番号" inputmode="numeric">
+    <label><input type="checkbox" id="public"> 公開にする</label>
     <div>
         <button id="create">部屋を作る</button>
+        <button id="find">公開の部屋を探す</button>
         <button id="join">参加する</button>
         <button id="start">開始</button>
         <button id="attack">攻撃を送る</button>
         <button id="stamp">👍</button>
         <button id="leave">部屋を出る</button>
     </div>
+    <ul id="rooms"></ul>
     <p id="status">未接続</p>
     <pre id="log"></pre>
 
@@ -45,12 +48,47 @@
         net.on('joined', (joined) => net.setRoomUrl(joined.roomCode));
         net.on('left', () => net.setRoomUrl(null));
 
-        $('create').onclick = () => net.createRoom($('name').value);
+        $('create').onclick = () => net.createRoom($('name').value, { public: $('public').checked });
+        $('find').onclick = () => showRooms();
         $('join').onclick = () => net.joinRoom($('code').value, $('name').value);
         $('start').onclick = () => net.start();
         $('attack').onclick = () => net.send('relay', { kind: 'attack', data: { lines: 2 } });
         $('stamp').onclick = () => net.stamp('👍');
         $('leave').onclick = () => net.leave();
+
+        // 公開の部屋の一覧（サーバーはテーブルを Scan するので、押したときだけ取り、取り続けない）
+        async function showRooms() {
+            $('rooms').textContent = '探しています…';
+            try {
+                const rooms = await net.listRooms();
+                if (!rooms.length) {
+                    $('rooms').textContent = '待っている部屋はありません';
+                    return;
+                }
+                // 名前は参加者が入れた文字なので、textContent で描く
+                $('rooms').replaceChildren(...rooms.map(room => {
+                    const button = document.createElement('button');
+                    button.textContent = `${room.hostName}の部屋（${room.players}/${room.maxPlayers}人）`;
+                    button.dataset.roomCode = room.roomCode;
+                    button.onclick = () => enterPublicRoom(room.roomCode);
+                    const item = document.createElement('li');
+                    item.append(button);
+                    return item;
+                }));
+            } catch (error) {
+                $('rooms').textContent = `一覧を取れませんでした（${error.code}）`;
+            }
+        }
+
+        // 一覧を取ったあとで始まった・満員になった・消えた部屋なら、一覧を取り直す
+        async function enterPublicRoom(roomCode) {
+            try {
+                await net.enterRoom(roomCode, $('name').value);
+                $('rooms').replaceChildren();
+            } catch (error) {
+                if (['already_started', 'room_full', 'room_not_found'].includes(error.code)) showRooms();
+            }
+        }
 
         // 招待URL（?room=）で開いたら部屋番号を入れ、前に入った部屋なら同じ席に戻る
         const roomCode = NetplayClient.roomCodeFromUrl();

@@ -153,6 +153,13 @@ export default {
 - 一覧に載せるのは、部屋番号・作った人の名前・人数・定員・設定（`settings.forLobby` を通したもの）・作った時刻。token は載せない
 - 一覧は DynamoDB のテーブルを Scan して絞る（索引を足さないので、各ゲームのテンプレートは変えなくてよい）。Scan はテーブル全体を読むので、画面では一覧を開いたときと「更新」を押したときに取り、短い間隔で取り続けない
 - 部屋を作ったあとで公開・非公開は変えられない
+- 一覧は取った時点のもの。押すまでに始まった・満員になった・消えた部屋には入れない（`enterRoom` が `already_started`・`room_full`・`room_not_found` で reject する）ので、そのときは一覧を取り直す
+
+画面に組み込むときは、次の3つを足す（最小の例は `examples/web/index.html`、通しの確かめ方は `examples/e2e.mjs`）
+
+1. 部屋を作る画面に「公開にする」の選択を置き、`net.createRoom(name, { public: true })` で作る。ロビーでは `lobby.public` で公開かどうかを出せる
+2. 「公開の部屋を探す」ボタンで `await net.listRooms()` を呼び、`hostName`・`players`/`maxPlayers`（と要れば `settings`）を並べる。名前は参加者が入れた文字なので `textContent` で描く。空なら「待っている部屋はありません」と出す
+3. 一覧の部屋を押したら `net.enterRoom(room.roomCode, name)` で入る。入ってからは、部屋番号で入ったときと同じ（`joined`・`lobby` が届き、招待URLも使える）
 
 ## メッセージ
 
@@ -421,8 +428,11 @@ npm install
 # テスト
 npm test
 
-# 通し試験の例（ヘッドレス Chrome で2人分のページを動かす）
+# 通し試験の例（ヘッドレス Chrome で2人分のページを動かす。公開の部屋の一覧から入る流れも確かめる）
 node examples/e2e.mjs
+
+# ポートを変えるとき（画面・テスト用サーバー・Chrome のリモートデバッグ）
+WEB_PORT=8191 PORT=8192 CHROME_PORT=9371 node examples/e2e.mjs
 ```
 
 ### 手元で複数のゲームを同時に動かす
